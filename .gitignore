@@ -26,3 +26,51 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python / Flask
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+.python-version
+
+# Flask instance/config
+instance/
+.werkzeug/
+
+# Packaging/build artifacts
+build/
+develop-eggs/
+.eggs/
+parts/
+sdist/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+
+# Test/coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+htmlcov/
+
+# Type checkers / linters
+.mypy_cache/
+.pyre/
+.ruff_cache/
+.pytype/
+
+# Jupyter
+.ipynb_checkpoints
