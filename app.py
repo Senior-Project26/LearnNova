@@ -5,7 +5,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
 from google.cloud import vision
 import os
 import io
@@ -22,8 +22,8 @@ load_dotenv()
 CORS(app)
 
 # Initialize API clients
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 vision_client = vision.ImageAnnotatorClient()
+gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
 def extract_pdf_text_and_tables(file_bytes: bytes) -> tuple[str, list[list[list[str]]]]:
@@ -288,71 +288,49 @@ def sanitize_summary(s: str) -> str:
         keep.append(ln)
     return "\n".join(keep).strip()
 
-def summarize_once(content: str, system_msg: str = "You are a helpful assistant that writes succinct study notes.", model: str = "gpt-5-nano") -> str:
+def summarize_once(content: str, system_msg: str = "You are a helpful assistant that writes succinct study notes.", model: str = "gemini-2.5-pro") -> str:
     prompt = (
         "Summarize the following content into clear, concise bullet points. "
         "If the content contains sections, delineate your summary with section headers. "
         "Focus on the main ideas. Do not include meta commentary, offers, or follow-ups. "
         "Output only the summary.\n\nCONTENT:\n" + content
     )
-    # Retry with exponential backoff for 429s
-    for _ in range(3):
-        try:
-            resp = openai_client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            out = (resp.choices[0].message.content if resp.choices else "").strip()
-            if out:
-                return sanitize_summary(out)
-            # If empty or stopped by length, try stricter prompt and lower cap
-            strict_prompt = (
-                "Output exactly 5 concise bullet points summarizing the content. "
-                "No intro or outro, bullets only. "
-                "No meta commentary or offers.\n\nCONTENT:\n" + content
-            )
-            # Try nano strict
-            try:
-                resp2 = openai_client.chat.completions.create(
-                    model="gpt-5-nano",
-                    messages=[
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": strict_prompt},
-                    ],
-                    max_completion_tokens=200,
-                )
-                out2 = (resp2.choices[0].message.content if resp2.choices else "").strip()
-                if out2:
-                    return sanitize_summary(out2)
-            except Exception:
-                pass
-            # Try mini strict
-            try:
-                resp3 = openai_client.chat.completions.create(
-                    model="gpt-5-mini",
-                    messages=[
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": strict_prompt},
-                    ],
-                    max_completion_tokens=200,
-                )
-                out3 = (resp3.choices[0].message.content if resp3.choices else "").strip()
-                if out3:
-                    return sanitize_summary(out3)
-            except Exception:
-                pass
-            # Fallback excerpt
-            return content[:1200]
-        except Exception as e:
-            print(f"Summarize once error: {e}")
-            raise
+    # Primary attempt with Gemini
+    try:
+        resp = gemini_client.models.generate_content(
+            model=model,
+            contents=system_msg + "\n\n" + prompt,
+            generation_config={
+                "max_output_tokens": 400,
+            },
+        )
+        out = (getattr(resp, "text", None) or "").strip()
+        if out:
+            return sanitize_summary(out)
+    except Exception as e:
+        print(f"Summarize once primary error: {e}")
+    # Strict fallback
+    strict_prompt = (
+        "Output exactly 5 concise bullet points summarizing the content. "
+        "No intro or outro, bullets only. No meta commentary or offers.\n\nCONTENT:\n" + content
+    )
+    try:
+        resp2 = gemini_client.models.generate_content(
+            model=model,
+            contents=system_msg + "\n\n" + strict_prompt,
+            generation_config={
+                "max_output_tokens": 220,
+            },
+        )
+        out2 = (getattr(resp2, "text", None) or "").strip()
+        if out2:
+            return sanitize_summary(out2)
+    except Exception as e:
+        print(f"Summarize once strict error: {e}")
     return content[:1200]
 
 def summarize_text(text: str) -> str:
-    """Summarize using OpenAI gpt-5-nano with chunking when input is very large.
+    """Summarize using Gemini with chunking when input is very large.
     into chunks, summarize each, then summarize the combined summaries.
     """
 
@@ -368,11 +346,7 @@ def summarize_text(text: str) -> str:
             partial_summaries: list[str] = []
             for idx, ch in enumerate(chunks, 1):
                 try:
-                    # Try nano, then mini
-                    try:
-                        partial = summarize_once(ch, model="gpt-5-nano")
-                    except Exception:
-                        partial = summarize_once(ch, model="gpt-5-mini")
+                    partial = summarize_once(ch, model="gemini-2.5-pro")
                 except Exception as e:
                     print(f"chunk {idx} summarize error: {e}")
                     raise RuntimeError("file too large to be summarized.")
@@ -382,26 +356,113 @@ def summarize_text(text: str) -> str:
             combined = "\n\n".join(partial_summaries)
             # Final pass on combined partials (much smaller than original)
             try:
-                # Try nano, then mini
-                try:
-                    return summarize_once(combined, system_msg="You write concise combined summaries of bullet-point notes.", model="gpt-5-nano")
-                except Exception:
-                    return summarize_once(combined, system_msg="You write concise combined summaries of bullet-point notes.", model="gpt-5-mini")
+                return summarize_once(combined, system_msg="You write concise combined summaries of bullet-point notes.", model="gemini-2.5-pro")
             except Exception as e:
                 print(f"final summarize error: {e}")
                 raise RuntimeError("file too large to be summarized.")
         else:
             # Single-shot summarize
             try:
-                return summarize_once(txt, model="gpt-5-nano")
+                return summarize_once(txt, model="gemini-2.5-pro")
             except Exception:
-                try:
-                    return summarize_once(txt, model="gpt-5-mini")
-                except Exception:
-                    raise RuntimeError("file too large to be summarized.")
+                raise RuntimeError("file too large to be summarized.")
     except Exception as e:
         print(e)
         return txt[:1200]
+
+def _ensure_minimum_summary(summary: str, size: str) -> tuple[bool, str]:
+    """Check if summary is sufficiently long for the requested size using estimate_tokens."""
+    tokens = estimate_tokens(summary)
+    # Heuristic floors; can be tuned after testing
+    min_requirements = {
+        "small": 200,
+        "medium": 600,
+        "large": 3000,
+        "comprehensive": 8000,
+    }
+    need = min_requirements.get(size, 60)
+    if tokens < need:
+        return False, f"Summary too short for '{size}' quiz (need >= {need} tokens, have ~{tokens}). Consider merging multiple notes."
+    return True, ""
+
+def _generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
+    """Use Gemini to generate MCQs and return structured JSON."""
+    schema_example = {
+        "questions": [
+            {
+                "question": "...",
+                "options": ["...", "...", "...", "..."],
+                "correctIndex": 0,
+            }
+        ]
+    }
+    user_prompt = (
+        "Create a multiple-choice quiz from the SUMMARY below. "
+        f"Number of questions: {count}. "
+        "Each question must have exactly 4 options and a single correctIndex (0..3). "
+        "Output strictly valid JSON matching this schema (no extra text):\n"
+        f"{schema_example}\n\nSUMMARY:\n{summary}"
+    )
+    resp = gemini_client.models.generate_content(
+        model="gemini-2.5-pro",
+        contents=user_prompt,
+        generation_config={
+            "response_mime_type": "application/json",
+            "max_output_tokens": min(3000, 80 * count),
+        },
+    )
+    raw = (getattr(resp, "text", None) or "").strip()
+    import json
+    data = json.loads(raw or "{}")
+    items = data.get("questions") or []
+    cleaned: list[dict] = []
+    for q in items:
+        question = str(q.get("question", "")).strip()
+        options = list(q.get("options") or [])
+        if len(options) != 4:
+            continue
+        options = [str(o) for o in options]
+        ci = q.get("correctIndex")
+        if not isinstance(ci, int) or not (0 <= ci <= 3):
+            continue
+        if not question or any(not str(o).strip() for o in options):
+            continue
+        cleaned.append({"question": question, "options": options, "correctIndex": ci})
+        if len(cleaned) >= count:
+            break
+    return cleaned
+
+@app.post("/api/quiz")
+def generate_quiz_endpoint():
+    """Generate a multiple-choice quiz from a provided summary and size using Gemini.
+    Body: { "summary": str, "size": "small|medium|large|comprehensive" }
+    Returns: { questions: [ { question, options: [str, str, str, str], correctIndex: int } ] }
+    """
+    data = request.get_json(silent=True) or {}
+    summary: str = (data.get("summary") or "").strip()
+    size: str = (data.get("size") or "small").strip().lower()
+    if not summary:
+        return jsonify(error="Missing summary"), 400
+    size_map = {
+        "small": 8,
+        "medium": 12,
+        "large": 25,
+        "comprehensive": 50,
+    }
+    count = size_map.get(size, 8)
+
+    ok, msg = _ensure_minimum_summary(summary, size)
+    if not ok:
+        return jsonify(error=msg), 400
+
+    try:
+        questions = _generate_quiz_with_gemini(summary, count)
+    except Exception as e:
+        return jsonify(error=f"quiz generation failed: {e}"), 500
+
+    if not questions:
+        return jsonify(error="quiz generation returned no valid questions"), 500
+    return jsonify(questions=questions[:count]), 200
 
 @app.post("/api/upload")
 def upload():
