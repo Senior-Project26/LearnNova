@@ -13,6 +13,7 @@ from PIL import Image
 import time
 import pdfplumber
 from pdf2image import convert_from_bytes
+from PyPDF2 import PdfReader
 
 app = Flask(__name__)
 
@@ -112,6 +113,102 @@ def vision_ocr_from_images(images: list[Image.Image] | bytes) -> tuple[str, floa
     full_text = ("\n".join(texts)).strip()
     avg_conf = sum(confidences) / len(confidences) if confidences else (0.0 if not full_text else 0.5)
     return full_text, avg_conf
+
+def get_pdf_outlines(file_bytes: bytes) -> list[tuple[str, int]]:
+    """Return flat list of (title, page_index) from PDF outlines/bookmarks (levels <= 1)."""
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
+        outlines = getattr(reader, "outlines", None) or getattr(reader, "outline", None)
+        results: list[tuple[str, int, int]] = []
+
+        # Build mapping from page objects to their indices
+        page_map = {getattr(p, "indirect_reference", None): i for i, p in enumerate(reader.pages)}
+
+        def _walk(items, level=0):
+            for it in items:
+                if isinstance(it, list):
+                    _walk(it, level + 1)
+                    continue
+                # Title
+                title = getattr(it, "title", None) or it.get("/Title", "Untitled")
+                # Destination / Page
+                dest = (
+                    it.get("destination", None)
+                    or it.get("page", None)
+                    or it.get("/Destination", None)
+                    or it.get("Destination", None)
+                    or it.get("Page", None)
+                    or it.get("/Page", None)
+                )
+                if dest is None:
+                    continue
+                if hasattr(dest, "get_object"):
+                    dest = dest.get_object()
+                # Find page index
+                pg_idx = None
+                if hasattr(dest, "indirect_reference") and dest.indirect_reference in page_map:
+                    pg_idx = page_map[dest.indirect_reference]
+                else:
+                    for i, p in enumerate(reader.pages):
+                        if p is dest:
+                            pg_idx = i
+                            break
+                if pg_idx is not None:
+                    results.append((str(title).strip(), pg_idx, level))
+
+        if outlines:
+            _walk(outlines)
+
+        # filter levels <= 1
+        results = [r for r in results if r[2] <= 1]
+        results.sort(key=lambda x: x[1])
+
+        # deduplicate
+        uniq: list[tuple[str, int]] = []
+        seen = set()
+        for t, p, lvl in results:
+            key = (t.lower(), p)
+            if key not in seen:
+                uniq.append((t, p))
+                seen.add(key)
+        return uniq
+    except Exception:
+        return []
+
+def extract_sections_by_bookmarks(file_bytes: bytes) -> tuple[list[tuple[str, str]], str | None]:
+    """Return list of (title, text) sections and a delineated string from bookmarks."""
+    marks = get_pdf_outlines(file_bytes)
+    if len(marks) < 1:
+        return [], None
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdfx:
+            n_pages = len(pdfx.pages)
+            ranges: list[tuple[str, int, int]] = []
+            for i, (title, start) in enumerate(marks):
+                end = (marks[i + 1][1] - 1) if i + 1 < len(marks) else (n_pages - 1)
+                start = max(0, min(start, n_pages - 1))
+                end = max(start, min(end, n_pages - 1))
+                ranges.append((title.strip(), start, end))
+            sections: list[tuple[str, str]] = []
+            for title, s, e in ranges:
+                buf: list[str] = []
+                for pi in range(s, e + 1):
+                    txtp = pdfx.pages[pi].extract_text() or ""
+                    if txtp:
+                        buf.append(txtp)
+                text_sec = ("\n".join(buf)).strip()
+                if text_sec:
+                    sections.append((title, text_sec))
+            if sections:
+                parts: list[str] = []
+                for title, body in sections:
+                    parts.append(f"=== SECTION START ===\nTitle: {title}\n\n{body}\n=== SECTION END ===")
+                delineated = "\n\n".join(parts)
+            else:
+                delineated = None
+            return sections, delineated
+    except Exception:
+        return [], None
 
 def extract_pdf_text(file_bytes: bytes) -> str:
     """Extract PDF text using both structured parsing and Vision OCR, then pick the better result.
@@ -214,7 +311,7 @@ def summarize_once(content: str, system_msg: str = "You are a helpful assistant 
             # If empty or stopped by length, try stricter prompt and lower cap
             strict_prompt = (
                 "Output exactly 5 concise bullet points summarizing the content. "
-                "Each bullet must be <= 15 words. No intro or outro, bullets only. "
+                "No intro or outro, bullets only. "
                 "No meta commentary or offers.\n\nCONTENT:\n" + content
             )
             # Try nano strict
@@ -323,7 +420,21 @@ def upload():
         kind = "other"
         if mimetype == "application/pdf" or filename.lower().endswith(".pdf"):
             kind = "pdf"
-            extracted_text = extract_pdf_text(file_bytes)
+            precomputed_summary: str | None = None
+            # Try to use PDF bookmarks/outlines to delineate sections
+            sections, _delineated = extract_sections_by_bookmarks(file_bytes)
+            if sections:
+                # Summarize each section independently, then combine
+                summaries: list[str] = []
+                for title, body in sections:
+                    sec_sum = summarize_text(body)
+                    if not sec_sum.strip():
+                        sec_sum = body[:1200]
+                    summaries.append(f"## {title}\n\n{sanitize_summary(sec_sum)}")
+                precomputed_summary = "\n\n".join(summaries)
+                extracted_text = "\n\n".join([b for _, b in sections])
+            else:
+                extracted_text = extract_pdf_text(file_bytes)
         elif mimetype.startswith("image/") or filename.lower().endswith((".png", ".jpg", ".jpeg")):
             kind = "image"
             try:
@@ -347,7 +458,8 @@ def upload():
         if not extracted_text or not extracted_text.strip():
             return jsonify(error="No text could be extracted from the file"), 400
 
-        summary = summarize_text(extracted_text)
+        # If we already summarized by sections, reuse it; otherwise summarize the full text
+        summary = precomputed_summary if (kind == "pdf" and 'precomputed_summary' in locals() and precomputed_summary) else summarize_text(extracted_text)
         return jsonify(
             filename=filename,
             mimetype=mimetype,
