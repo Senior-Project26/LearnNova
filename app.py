@@ -9,6 +9,8 @@ from google import genai
 from google.cloud import vision
 import os
 import io
+import json
+import re
 from PIL import Image
 import time
 import pdfplumber
@@ -114,6 +116,36 @@ def vision_ocr_from_images(images: list[Image.Image] | bytes) -> tuple[str, floa
     avg_conf = sum(confidences) / len(confidences) if confidences else (0.0 if not full_text else 0.5)
     return full_text, avg_conf
 
+def walk_outlines(items, level, reader: PdfReader, page_map, results: list[tuple[str, int, int]]):
+    """Top-level helper to flatten PDF outlines into (title, page_index, level)."""
+    for it in items:
+        if isinstance(it, list):
+            walk_outlines(it, level + 1, reader, page_map, results)
+            continue
+        title = getattr(it, "title", None) or it.get("/Title", "Untitled")
+        dest = (
+            it.get("destination", None)
+            or it.get("page", None)
+            or it.get("/Destination", None)
+            or it.get("Destination", None)
+            or it.get("Page", None)
+            or it.get("/Page", None)
+        )
+        if dest is None:
+            continue
+        if hasattr(dest, "get_object"):
+            dest = dest.get_object()
+        pg_idx = None
+        if hasattr(dest, "indirect_reference") and dest.indirect_reference in page_map:
+            pg_idx = page_map[dest.indirect_reference]
+        else:
+            for i, p in enumerate(reader.pages):
+                if p is dest:
+                    pg_idx = i
+                    break
+        if pg_idx is not None:
+            results.append((str(title).strip(), pg_idx, level))
+
 def get_pdf_outlines(file_bytes: bytes) -> list[tuple[str, int]]:
     """Return flat list of (title, page_index) from PDF outlines/bookmarks (levels <= 1)."""
     try:
@@ -124,40 +156,8 @@ def get_pdf_outlines(file_bytes: bytes) -> list[tuple[str, int]]:
         # Build mapping from page objects to their indices
         page_map = {getattr(p, "indirect_reference", None): i for i, p in enumerate(reader.pages)}
 
-        def _walk(items, level=0):
-            for it in items:
-                if isinstance(it, list):
-                    _walk(it, level + 1)
-                    continue
-                # Title
-                title = getattr(it, "title", None) or it.get("/Title", "Untitled")
-                # Destination / Page
-                dest = (
-                    it.get("destination", None)
-                    or it.get("page", None)
-                    or it.get("/Destination", None)
-                    or it.get("Destination", None)
-                    or it.get("Page", None)
-                    or it.get("/Page", None)
-                )
-                if dest is None:
-                    continue
-                if hasattr(dest, "get_object"):
-                    dest = dest.get_object()
-                # Find page index
-                pg_idx = None
-                if hasattr(dest, "indirect_reference") and dest.indirect_reference in page_map:
-                    pg_idx = page_map[dest.indirect_reference]
-                else:
-                    for i, p in enumerate(reader.pages):
-                        if p is dest:
-                            pg_idx = i
-                            break
-                if pg_idx is not None:
-                    results.append((str(title).strip(), pg_idx, level))
-
         if outlines:
-            _walk(outlines)
+            walk_outlines(outlines, 0, reader, page_map, results)
 
         # filter levels <= 1
         results = [r for r in results if r[2] <= 1]
@@ -300,15 +300,12 @@ def summarize_once(content: str, system_msg: str = "You are a helpful assistant 
         resp = gemini_client.models.generate_content(
             model=model,
             contents=system_msg + "\n\n" + prompt,
-            generation_config={
-                "max_output_tokens": 400,
-            },
         )
         out = (getattr(resp, "text", None) or "").strip()
         if out:
             return sanitize_summary(out)
-    except Exception as e:
-        print(f"Summarize once primary error: {e}")
+    except Exception:
+        pass
     # Strict fallback
     strict_prompt = (
         "Output exactly 5 concise bullet points summarizing the content. "
@@ -317,16 +314,13 @@ def summarize_once(content: str, system_msg: str = "You are a helpful assistant 
     try:
         resp2 = gemini_client.models.generate_content(
             model=model,
-            contents=system_msg + "\n\n" + strict_prompt,
-            generation_config={
-                "max_output_tokens": 220,
-            },
+            contents=system_msg + "\n\n" + strict_prompt,   
         )
         out2 = (getattr(resp2, "text", None) or "").strip()
         if out2:
             return sanitize_summary(out2)
-    except Exception as e:
-        print(f"Summarize once strict error: {e}")
+    except Exception:
+        pass
     return content[:1200]
 
 def summarize_text(text: str) -> str:
@@ -347,8 +341,7 @@ def summarize_text(text: str) -> str:
             for idx, ch in enumerate(chunks, 1):
                 try:
                     partial = summarize_once(ch, model="gemini-2.5-pro")
-                except Exception as e:
-                    print(f"chunk {idx} summarize error: {e}")
+                except Exception:
                     raise RuntimeError("file too large to be summarized.")
                 partial_summaries.append(partial)
                 # Throttle to respect TPM
@@ -357,8 +350,7 @@ def summarize_text(text: str) -> str:
             # Final pass on combined partials (much smaller than original)
             try:
                 return summarize_once(combined, system_msg="You write concise combined summaries of bullet-point notes.", model="gemini-2.5-pro")
-            except Exception as e:
-                print(f"final summarize error: {e}")
+            except Exception:
                 raise RuntimeError("file too large to be summarized.")
         else:
             # Single-shot summarize
@@ -366,11 +358,10 @@ def summarize_text(text: str) -> str:
                 return summarize_once(txt, model="gemini-2.5-pro")
             except Exception:
                 raise RuntimeError("file too large to be summarized.")
-    except Exception as e:
-        print(e)
+    except Exception:
         return txt[:1200]
 
-def _ensure_minimum_summary(summary: str, size: str) -> tuple[bool, str]:
+def ensure_minimum_summary(summary: str, size: str) -> tuple[bool, str]:
     """Check if summary is sufficiently long for the requested size using estimate_tokens."""
     tokens = estimate_tokens(summary)
     # Heuristic floors; can be tuned after testing
@@ -385,7 +376,53 @@ def _ensure_minimum_summary(summary: str, size: str) -> tuple[bool, str]:
         return False, f"Summary too short for '{size}' quiz (need >= {need} tokens, have ~{tokens}). Consider merging multiple notes."
     return True, ""
 
-def _generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
+def parse_json_lenient(s: str):
+    """Parse JSON leniently by extracting the largest JSON object/array when needed."""
+    try:
+        return json.loads(s)
+    except Exception:
+        # Extract the largest JSON object or array from the text
+        arr_match = re.search(r"\[[\s\S]*\]", s)
+        obj_match = re.search(r"\{[\s\S]*\}", s)
+        candidate = None
+        if arr_match and obj_match:
+            candidate = arr_match.group(0) if len(arr_match.group(0)) > len(obj_match.group(0)) else obj_match.group(0)
+        elif arr_match:
+            candidate = arr_match.group(0)
+        elif obj_match:
+            candidate = obj_match.group(0)
+        if candidate:
+            try:
+                return json.loads(candidate)
+            except Exception:
+                return {}
+        return {}
+
+def to_index_from_answer(ans: str | int | None, options: list[str]) -> int | None:
+    """Coerce a variety of answer representations to 0..3 index."""
+    if ans is None:
+        return None
+    if isinstance(ans, int):
+        return ans if 0 <= ans < len(options) else None
+    s = str(ans).strip()
+    if not s:
+        return None
+    letters = {"a": 0, "b": 1, "c": 2, "d": 3}
+    low = s.lower()
+    if low in letters:
+        return letters[low]
+    if low.startswith("option "):
+        try:
+            n = int(low.split("option ", 1)[1]) - 1
+            return n if 0 <= n < len(options) else None
+        except Exception:
+            pass
+    try:
+        return options.index(s)
+    except ValueError:
+        return None
+
+def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
     """Use Gemini to generate MCQs and return structured JSON."""
     schema_example = {
         "questions": [
@@ -406,30 +443,135 @@ def _generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
     resp = gemini_client.models.generate_content(
         model="gemini-2.5-pro",
         contents=user_prompt,
-        generation_config={
-            "response_mime_type": "application/json",
-            "max_output_tokens": min(3000, 80 * count),
-        },
     )
     raw = (getattr(resp, "text", None) or "").strip()
-    import json
-    data = json.loads(raw or "{}")
-    items = data.get("questions") or []
+    data = parse_json_lenient(raw or "{}")
+
+    # Normalize to a list of question dicts under variable `items`
+    items = []
+    if isinstance(data, dict):
+        if isinstance(data.get("questions"), list):
+            items = data.get("questions") or []
+        elif isinstance(data.get("items"), list):
+            items = data.get("items") or []
+        elif isinstance(data.get("quiz"), dict) and isinstance(data["quiz"].get("questions"), list):
+            items = data["quiz"].get("questions") or []
+    elif isinstance(data, list):
+        items = data
+
     cleaned: list[dict] = []
+
     for q in items:
-        question = str(q.get("question", "")).strip()
-        options = list(q.get("options") or [])
-        if len(options) != 4:
+        if not isinstance(q, dict):
             continue
-        options = [str(o) for o in options]
+        # Accept several aliases for the question text
+        question = (
+            str(
+                q.get("question")
+                or q.get("prompt")
+                or q.get("q")
+                or ""
+            )
+        ).strip()
+        # Accept several aliases for options
+        opts = q.get("options") or q.get("choices") or q.get("answers") or []
+        if not isinstance(opts, list):
+            opts = []
+        options = [str(o).strip() for o in opts if str(o).strip()]
+        # Enforce exactly 4 options by trimming extras; skip if fewer than 3 (cannot form 4 reliably)
+        if len(options) >= 4:
+            options = options[:4]
+        elif len(options) == 3:
+            # Try padding with a plausible distractor if model produced 3
+            options.append("None of the above")
+        else:
+            continue
+
+        # Determine correct index from multiple possible fields
         ci = q.get("correctIndex")
+        if not isinstance(ci, int):
+            ci = (
+                q.get("answerIndex")
+                if isinstance(q.get("answerIndex"), int)
+                else to_index_from_answer(q.get("answer"), options)
+            )
+        # If still None, try common keys
+        if not isinstance(ci, int):
+            ci = to_index_from_answer(q.get("correct"), options)
+
+        # Validate index range after any trimming/padding
+        if not isinstance(ci, int) or not (0 <= ci <= 3):
+            # As a last resort, try to infer by matching any explicit "correctOption" text
+            ci = to_index_from_answer(q.get("correctOption"), options)
         if not isinstance(ci, int) or not (0 <= ci <= 3):
             continue
-        if not question or any(not str(o).strip() for o in options):
+
+        if not question or any(not o for o in options):
             continue
+
         cleaned.append({"question": question, "options": options, "correctIndex": ci})
         if len(cleaned) >= count:
             break
+
+    # If first attempt produced nothing, try a stricter retry once
+    if not cleaned:
+        retry_prompt = (
+            "Return STRICT JSON only, no markdown, matching this schema exactly: "
+            f"{schema_example}. Do not add any keys beyond 'questions', 'question', 'options', 'correctIndex'. "
+            f"Number of questions: {count}. SUMMARY:\n{summary}"
+        )
+        try:
+            retry_resp = gemini_client.models.generate_content(
+                model="gemini-2.5-pro",
+                contents=retry_prompt,
+            )
+            retry_raw = (getattr(retry_resp, "text", None) or "").strip()
+            data = parse_json_lenient(retry_raw or "{}")
+            items = []
+            if isinstance(data, dict):
+                if isinstance(data.get("questions"), list):
+                    items = data.get("questions") or []
+            elif isinstance(data, list):
+                items = data
+
+            for q in items:
+                if not isinstance(q, dict):
+                    continue
+                question = (
+                    str(q.get("question") or q.get("prompt") or q.get("q") or "")
+                ).strip()
+                opts = q.get("options") or q.get("choices") or q.get("answers") or []
+                if not isinstance(opts, list):
+                    opts = []
+                options = [str(o).strip() for o in opts if str(o).strip()]
+                if len(options) >= 4:
+                    options = options[:4]
+                elif len(options) == 3:
+                    options.append("None of the above")
+                else:
+                    continue
+                ci = q.get("correctIndex")
+                if not isinstance(ci, int):
+                    ci = (
+                        q.get("answerIndex")
+                        if isinstance(q.get("answerIndex"), int)
+                        else to_index_from_answer(q.get("answer"), options)
+                    )
+                if not isinstance(ci, int):
+                    ci = to_index_from_answer(q.get("correct"), options)
+                if not isinstance(ci, int) or not (0 <= ci <= 3):
+                    ci = to_index_from_answer(q.get("correctOption"), options)
+                if not isinstance(ci, int) or not (0 <= ci <= 3):
+                    continue
+                if not question or any(not o for o in options):
+                    continue
+                cleaned.append({"question": question, "options": options, "correctIndex": ci})
+                if len(cleaned) >= count:
+                    break
+        except Exception:
+            # ignore and return whatever we have
+            pass
+
     return cleaned
 
 @app.post("/api/quiz")
@@ -451,12 +593,12 @@ def generate_quiz_endpoint():
     }
     count = size_map.get(size, 8)
 
-    ok, msg = _ensure_minimum_summary(summary, size)
+    ok, msg = ensure_minimum_summary(summary, size)
     if not ok:
         return jsonify(error=msg), 400
 
     try:
-        questions = _generate_quiz_with_gemini(summary, count)
+        questions = generate_quiz_with_gemini(summary, count)
     except Exception as e:
         return jsonify(error=f"quiz generation failed: {e}"), 500
 

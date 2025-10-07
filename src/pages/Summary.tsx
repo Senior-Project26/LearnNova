@@ -1,9 +1,22 @@
-import { useLocation, Link } from "react-router-dom";
+import { useLocation, Link, useNavigate } from "react-router-dom";
 
 export default function Summary() {
   const location = useLocation() as { state?: { summary?: string; result?: any } };
   const summary = location.state?.summary;
   const result = location.state?.result;
+  const navigate = useNavigate();
+
+  const quizMe = () => {
+    if (!summary) return;
+    try {
+      // Persist summary for Quiz.tsx prefill
+      sessionStorage.setItem(
+        "lastUploadResult",
+        JSON.stringify({ summary })
+      );
+    } catch {}
+    navigate("/quiz");
+  };
 
   return (
     <div className="container mx-auto max-w-3xl p-6">
@@ -22,6 +35,14 @@ export default function Summary() {
               <pre className="whitespace-pre-wrap bg-gray-50 p-4 rounded border mt-2">{JSON.stringify(result, null, 2)}</pre>
             </details>
           )}
+          <div className="flex items-center gap-3">
+            <button onClick={quizMe} className="px-4 py-2 bg-green-600 text-white rounded">
+              Quiz Me!
+            </button>
+            <button className="px-4 py-2 bg-gray-300 text-gray-800 rounded" title="Coming soon" disabled>
+              Study Guide
+            </button>
+          </div>
           <Link className="inline-block mt-4 px-4 py-2 bg-blue-600 text-white rounded" to="/upload">
             Upload another file
           </Link>

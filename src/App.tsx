@@ -14,6 +14,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import SignIn from "./pages/SignIn";
 import Upload from "./pages/Upload";
 import Summary from "./pages/Summary";
+import Quiz from "./pages/Quiz";
 
 const queryClient = new QueryClient();
 
@@ -29,6 +30,7 @@ const App = () => (
             <Route path="/signin" element={<SignIn />} />
             <Route path="/upload" element={<Upload />} />
             <Route path="/summary" element={<Summary />} />
+            <Route path="/quiz" element={<Quiz />} />
             <Route
               path="/study"
               element={
