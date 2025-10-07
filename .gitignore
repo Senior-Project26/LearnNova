@@ -74,3 +74,4 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints
+"firebase-service-account.json" 
