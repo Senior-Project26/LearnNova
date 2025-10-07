@@ -15,6 +15,7 @@ import SignIn from "./pages/SignIn";
 import Upload from "./pages/Upload";
 import Summary from "./pages/Summary";
 import Quiz from "./pages/Quiz";
+import StudyGuide from "./pages/StudyGuide";
 
 const queryClient = new QueryClient();
 
@@ -31,6 +32,7 @@ const App = () => (
             <Route path="/upload" element={<Upload />} />
             <Route path="/summary" element={<Summary />} />
             <Route path="/quiz" element={<Quiz />} />
+            <Route path="/study-guide" element={<StudyGuide />} />
             <Route
               path="/study"
               element={

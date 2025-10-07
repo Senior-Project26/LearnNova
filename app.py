@@ -606,6 +606,43 @@ def generate_quiz_endpoint():
         return jsonify(error="quiz generation returned no valid questions"), 500
     return jsonify(questions=questions[:count]), 200
 
+def generate_study_guide(text: str) -> str:
+    """Use Gemini to expand a summary/notes into a structured, comprehensive study guide.
+    Produces organized headings and bullet points, with definitions, axioms, examples, tips.
+    """
+    prompt = (
+        "Transform the following notes into a comprehensive STUDY GUIDE with clear structure.\n"
+        "Requirements:\n"
+        "- Use section headings and concise bullet points.\n"
+        "- Expand briefly on key concepts (definitions, axioms, theorems, formulas).\n"
+        "- Add short examples where helpful.\n"
+        "- Avoid meta commentary and instructions. Output the study guide only.\n\n"
+        f"NOTES:\n{text}"
+    )
+    try:
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.5-pro",
+            contents=prompt,
+        )
+        out = (getattr(resp, "text", None) or "").strip()
+        return out
+    except Exception:
+        return text
+
+@app.post("/api/study_guide")
+def study_guide_endpoint():
+    data = request.get_json(silent=True) or {}
+    txt = (data.get("text") or "").strip()
+    if not txt:
+        return jsonify(error="Missing text"), 400
+    # Light guardrail: require at least ~60 tokens
+    if estimate_tokens(txt) < 60:
+        return jsonify(error="Input is too short for a useful study guide. Provide a longer summary or notes."), 400
+    guide = generate_study_guide(txt)
+    if not guide:
+        return jsonify(error="study guide generation failed"), 500
+    return jsonify(guide=guide), 200
+
 @app.post("/api/upload")
 def upload():
     try:
