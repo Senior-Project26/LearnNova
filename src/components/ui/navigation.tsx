@@ -2,58 +2,73 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Menu, X, BookOpen, User, Settings } from "lucide-react";
 import logo from "@/assets/learnova-logo.png";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 
 export const Navigation = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const { user, signOutUser } = useAuth();
+  const location = useLocation();
+
+  // Helper to highlight active link
+  const isActive = (path: string) => location.pathname === path;
 
   return (
-    <nav className="fixed top-0 w-full z-50 bg-muted/80 backdrop-blur-md border-b border-white/10">
+    <nav className="fixed top-0 w-full z-50 bg-[#4C1D3D]/90 backdrop-blur-xl border-b border-pink-900/30 shadow-lg shadow-pink-900/20">
       <div className="container mx-auto px-4">
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <div className="flex items-center space-x-3">
             <Link to="/" className="flex items-center space-x-3">
               <img src={logo} alt="LearnNova" className="h-8 w-8" />
-              <h1 className="text-xl font-bold text-foreground">LearnNova</h1>
+              <h1 className="text-xl font-bold text-[#FFBB94] tracking-wide">
+                LearnNova
+              </h1>
             </Link>
           </div>
 
           {/* Desktop Navigation */}
-          <div className="hidden md:flex items-center space-x-6">
-            <Button asChild variant="ghost" className="text-foreground hover:text-accent">
-              <Link to="/study">
-                <BookOpen className="w-4 h-4 mr-2" />
-                Study
-              </Link>
-            </Button>
-            <Button asChild variant="ghost" className="text-foreground hover:text-accent">
-              <Link to="/dashboard">Dashboard</Link>
-            </Button>
-            <Button asChild variant="ghost" className="text-foreground hover:text-accent">
-              <Link to="/profile">
-                <User className="w-4 h-4 mr-2" />
-                Profile
-              </Link>
-            </Button>
-            <Button asChild variant="ghost" className="text-foreground hover:text-accent">
-              <Link to="/settings">
-                <Settings className="w-4 h-4 mr-2" />
-                Settings
-              </Link>
-            </Button>
+          <div className="hidden md:flex items-center space-x-4">
+            {[
+              { path: "/study", label: "Study", icon: <BookOpen className="w-4 h-4 mr-2" /> },
+              { path: "/dashboard", label: "Dashboard" },
+              { path: "/profile", label: "Profile", icon: <User className="w-4 h-4 mr-2" /> },
+              { path: "/settings", label: "Settings", icon: <Settings className="w-4 h-4 mr-2" /> },
+            ].map((item) => (
+              <Button
+                asChild
+                key={item.path}
+                variant="ghost"
+                className={`font-medium transition-all px-3 py-2 rounded-md
+                  ${
+                    isActive(item.path)
+                      ? "bg-[#852E4E] text-[#FFBB94] shadow-lg shadow-pink-900/30"
+                      : "text-[#FFBB94] hover:bg-[#A33757]/50 hover:text-[#FFBB94]"
+                  }`}
+              >
+                <Link to={item.path} className="flex items-center">
+                  {item.icon}
+                  {item.label}
+                </Link>
+              </Button>
+            ))}
           </div>
+
           {/* Auth Buttons */}
           <div className="hidden md:flex items-center space-x-3">
             {user ? (
-              <Button onClick={signOutUser} variant="ghost" className="text-foreground hover:text-accent">
+              <Button
+                onClick={signOutUser}
+                className="bg-[#4C1D3D] hover:bg-[#852E4E] text-[#FFBB94] border border-pink-700/40 font-semibold shadow-md shadow-pink-900/30 transition-all"
+              >
                 Sign Out
               </Button>
             ) : (
-              <Button asChild className="btn-cosmic">
-                <Link to="/signin">Sign in / Sign up</Link>
+              <Button
+                asChild
+                className="bg-[#DC586D] hover:bg-[#A33757] text-white font-semibold shadow-lg shadow-pink-900/30 transition-all"
+              >
+                <Link to="/signin">Sign In / Sign Up</Link>
               </Button>
             )}
           </div>
@@ -63,7 +78,7 @@ export const Navigation = () => {
             <Button
               variant="ghost"
               onClick={() => setIsMenuOpen(!isMenuOpen)}
-              className="text-foreground"
+              className="text-[#FFBB94]"
             >
               {isMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </Button>
@@ -73,35 +88,44 @@ export const Navigation = () => {
         {/* Mobile Menu */}
         {isMenuOpen && (
           <div className="md:hidden py-4 space-y-2 slide-up">
-            <Button asChild variant="ghost" className="w-full justify-start text-foreground">
-              <Link to="/study">
-                <BookOpen className="w-4 h-4 mr-2" />
-                Study
-              </Link>
-            </Button>
-            <Button asChild variant="ghost" className="w-full justify-start text-foreground">
-              <Link to="/dashboard">Dashboard</Link>
-            </Button>
-            <Button asChild variant="ghost" className="w-full justify-start text-foreground">
-              <Link to="/profile">
-                <User className="w-4 h-4 mr-2" />
-                Profile
-              </Link>
-            </Button>
-            <Button asChild variant="ghost" className="w-full justify-start text-foreground">
-              <Link to="/settings">
-                <Settings className="w-4 h-4 mr-2" />
-                Settings
-              </Link>
-            </Button>
+            {[
+              { path: "/study", label: "Study", icon: <BookOpen className="w-4 h-4 mr-2" /> },
+              { path: "/dashboard", label: "Dashboard" },
+              { path: "/profile", label: "Profile", icon: <User className="w-4 h-4 mr-2" /> },
+              { path: "/settings", label: "Settings", icon: <Settings className="w-4 h-4 mr-2" /> },
+            ].map((item) => (
+              <Button
+                asChild
+                key={item.path}
+                variant="ghost"
+                className={`w-full justify-start font-medium transition-all rounded-md
+                  ${
+                    isActive(item.path)
+                      ? "bg-[#852E4E] text-[#FFBB94]"
+                      : "text-[#FFBB94] hover:bg-[#A33757]/50 hover:text-[#FFBB94]"
+                  }`}
+              >
+                <Link to={item.path} className="flex items-center">
+                  {item.icon}
+                  {item.label}
+                </Link>
+              </Button>
+            ))}
+
             <div className="pt-2 space-y-2">
               {user ? (
-                <Button onClick={signOutUser} variant="ghost" className="w-full text-foreground">
+                <Button
+                  onClick={signOutUser}
+                  className="w-full bg-[#4C1D3D] hover:bg-[#852E4E] text-[#FFBB94] border border-pink-700/40"
+                >
                   Sign Out
                 </Button>
               ) : (
-                <Button asChild className="w-full btn-cosmic">
-                  <Link to="/signin">Sign in / Sign up</Link>
+                <Button
+                  asChild
+                  className="w-full bg-[#DC586D] hover:bg-[#A33757] text-white font-semibold shadow-lg shadow-pink-900/30 transition-all"
+                >
+                  <Link to="/signin">Sign In / Sign Up</Link>
                 </Button>
               )}
             </div>

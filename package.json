@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev:client": "vite",
-    "dev:server": "uv run flask --app app run --debug --port 5000",
+    "dev:server": "python app.py",
     "dev": "concurrently -k -n client,server -c \"cyan,magenta\" \"npm:dev:client\" \"npm:dev:server\"",
     "build": "vite build",
     "build:dev": "vite build --mode development",
@@ -48,6 +48,7 @@
     "date-fns": "^3.6.0",
     "embla-carousel-react": "^8.6.0",
     "firebase": "^12.3.0",
+    "framer-motion": "^12.23.22",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.462.0",
     "next-themes": "^0.3.0",

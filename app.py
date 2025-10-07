@@ -1,12 +1,13 @@
-"""
-Stellar Study Buddy API
-"""
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify, session
 from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from google import genai
 from google.cloud import vision
+import psycopg2
+import firebase_admin
+from firebase_admin import credentials, auth as firebase_auth
 import os
 import io
 import json
@@ -17,16 +18,143 @@ import pdfplumber
 from pdf2image import convert_from_bytes
 from PyPDF2 import PdfReader
 
+# ----------------------------
+# Flask App Setup
+# ----------------------------
 app = Flask(__name__)
+CORS(app, supports_credentials=True)
 
-# Load environment and enable CORS for local dev
+# Load environment for local dev
 load_dotenv()
-CORS(app)
 
-# Initialize API clients
+# Initialize API clients (Study Buddy)
 vision_client = vision.ImageAnnotatorClient()
 gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
+# ----------------------------
+# Firebase Admin Setup
+# ----------------------------
+try:
+    cred = credentials.Certificate("firebase-service-account.json")
+    firebase_admin.initialize_app(cred)
+    print("Firebase Admin connected")
+except Exception as e:
+    print(f"Firebase Admin connection failed: {e}")
+
+# ----------------------------
+# Database Connection
+# ----------------------------
+def get_connection():
+    try:
+        return psycopg2.connect(
+            host="localhost",
+            database="learnnova",
+            user="postgres",
+            password="yourpassword"  # ← replace with your own or env var
+        )
+    except Exception as e:
+        print("Database connection failed:", e)
+        return None
+
+# ----------------------------
+# Routes
+# ----------------------------
+
+@app.route("/api/ping")
+def ping():
+    """Simple test route"""
+    return jsonify({"message": "Flask backend is running"})
+
+@app.route("/api/signup", methods=["POST"])
+def signup():
+    data = request.get_json()
+    username = data.get("username")
+    email = data.get("email")
+    password = data.get("password")
+
+    if not username or not email or not password:
+        return jsonify({"error": "All fields are required"}), 400
+
+    hashed_pw = generate_password_hash(password)
+    conn = get_connection()
+    if not conn:
+        return jsonify({"error": "Database connection error"}), 500
+
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            'INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s) RETURNING id',
+            (username, email, hashed_pw),
+        )
+        user_id = cur.fetchone()[0]
+        conn.commit()
+        return jsonify({"message": "User created", "user_id": user_id}), 201
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        return jsonify({"error": "Username or email already exists"}), 409
+    finally:
+        cur.close()
+        conn.close()
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    input_value = data.get("input_value")
+    password = data.get("password")
+
+    conn = get_connection()
+    if not conn:
+        return jsonify({"error": "Database connection error"}), 500
+
+    cur = conn.cursor()
+    if "@" in input_value:
+        cur.execute('SELECT id, username, password_hash FROM users WHERE email = %s', (input_value,))
+    else:
+        cur.execute('SELECT id, username, password_hash FROM users WHERE username = %s', (input_value,))
+    user = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    user_id, username, password_hash = user
+    if not check_password_hash(password_hash, password):
+        return jsonify({"error": "Incorrect password"}), 401
+
+    session["user_id"] = user_id
+    session["username"] = username
+    return jsonify({"message": "Login successful", "username": username})
+
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"message": "Logged out successfully"})
+
+# Firebase login verification (for Google sign-in)
+@app.route("/api/firebase-login", methods=["POST"])
+def firebase_login():
+    data = request.get_json()
+    token = data.get("idToken")
+    try:
+        decoded_token = firebase_auth.verify_id_token(token)
+        user_email = decoded_token.get("email")
+        user_name = decoded_token.get("name", "NoName")
+        return jsonify({"message": "Firebase login verified", "email": user_email, "name": user_name})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 401
+
+# ----------------------------
+# Error Handler for Frontend Routes
+# ----------------------------
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "Not Found - handled by frontend"}), 404
+
+# ============================
+# Study Buddy: Helpers & Endpoints
+# ============================
 
 def extract_pdf_text_and_tables(file_bytes: bytes) -> tuple[str, list[list[list[str]]]]:
     extracted_text = ""
@@ -41,11 +169,7 @@ def extract_pdf_text_and_tables(file_bytes: bytes) -> tuple[str, list[list[list[
                 extracted_tables.append(table)
     return extracted_text.strip(), extracted_tables
 
-
 def ocr_quality_score(text: str) -> float:
-    """Heuristic 0..1 estimate of OCR quality from plain text.
-    Considers: alphanumeric ratio, avg words/line, short-line ratio, unique word ratio.
-    """
     t = (text or "").strip()
     if not t:
         return 0.0
@@ -61,15 +185,10 @@ def ocr_quality_score(text: str) -> float:
     short_ratio = short_lines / max(1, len(lines))
     uniq_words = len(set(w.lower().strip(".,:;!?()[]{}'\"") for w in words))
     uniq_ratio = uniq_words / max(1, len(words))
-    # Weighted score
     score = 0.45 * alnum_ratio + 0.35 * min(1.0, avg_words_line / 6.0) + 0.20 * uniq_ratio - 0.20 * short_ratio
-    # Clamp 0..1
     return max(0.0, min(1.0, score))
 
 def vision_ocr_from_images(images: list[Image.Image] | bytes) -> tuple[str, float]:
-    """Run Google Vision DOCUMENT_TEXT_DETECTION on one or multiple images.
-    Returns (full_text, avg_word_confidence 0..1).
-    """
     contents: list[bytes] = []
     if isinstance(images, bytes):
         try:
@@ -96,11 +215,9 @@ def vision_ocr_from_images(images: list[Image.Image] | bytes) -> tuple[str, floa
             resp = vision_client.document_text_detection(image=vimg)
             if resp.error.message:
                 continue
-            # Collect text
             txt = getattr(resp.full_text_annotation, "text", "") or ""
             if txt:
                 texts.append(txt)
-            # Collect word-level confidences where available
             fta = resp.full_text_annotation
             if fta and getattr(fta, "pages", None):
                 for page in fta.pages:
@@ -117,7 +234,6 @@ def vision_ocr_from_images(images: list[Image.Image] | bytes) -> tuple[str, floa
     return full_text, avg_conf
 
 def walk_outlines(items, level, reader: PdfReader, page_map, results: list[tuple[str, int, int]]):
-    """Top-level helper to flatten PDF outlines into (title, page_index, level)."""
     for it in items:
         if isinstance(it, list):
             walk_outlines(it, level + 1, reader, page_map, results)
@@ -147,23 +263,15 @@ def walk_outlines(items, level, reader: PdfReader, page_map, results: list[tuple
             results.append((str(title).strip(), pg_idx, level))
 
 def get_pdf_outlines(file_bytes: bytes) -> list[tuple[str, int]]:
-    """Return flat list of (title, page_index) from PDF outlines/bookmarks (levels <= 1)."""
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
         outlines = getattr(reader, "outlines", None) or getattr(reader, "outline", None)
         results: list[tuple[str, int, int]] = []
-
-        # Build mapping from page objects to their indices
         page_map = {getattr(p, "indirect_reference", None): i for i, p in enumerate(reader.pages)}
-
         if outlines:
             walk_outlines(outlines, 0, reader, page_map, results)
-
-        # filter levels <= 1
         results = [r for r in results if r[2] <= 1]
         results.sort(key=lambda x: x[1])
-
-        # deduplicate
         uniq: list[tuple[str, int]] = []
         seen = set()
         for t, p, lvl in results:
@@ -176,7 +284,6 @@ def get_pdf_outlines(file_bytes: bytes) -> list[tuple[str, int]]:
         return []
 
 def extract_sections_by_bookmarks(file_bytes: bytes) -> tuple[list[tuple[str, str]], str | None]:
-    """Return list of (title, text) sections and a delineated string from bookmarks."""
     marks = get_pdf_outlines(file_bytes)
     if len(marks) < 1:
         return [], None
@@ -211,15 +318,9 @@ def extract_sections_by_bookmarks(file_bytes: bytes) -> tuple[list[tuple[str, st
         return [], None
 
 def extract_pdf_text(file_bytes: bytes) -> str:
-    """Extract PDF text using both structured parsing and Vision OCR, then pick the better result.
-    Structured parsing first (pdfplumber), then Vision OCR at higher DPI; choose by confidence/quality.
-    """
-    # 1) Structured parse
     structured_text, _ = extract_pdf_text_and_tables(file_bytes)
     structured_text = (structured_text or "").strip()
     score_struct = ocr_quality_score(structured_text)
-
-    # 2) Vision OCR (always attempt so we can compare quality)
     vision_text = ""
     conf = 0.0
     try:
@@ -229,20 +330,14 @@ def extract_pdf_text(file_bytes: bytes) -> str:
         vision_text, conf = "", 0.0
     vision_text = (vision_text or "").strip()
     score_vision = ocr_quality_score(vision_text)
-
-    # 3) Decide best
-    # Prefer Vision if confidence is decent or quality beats structured by a margin
     prefer_vision = (conf >= 0.55) or (score_vision >= score_struct + 0.05)
-
     chosen = vision_text if prefer_vision else structured_text
     return chosen
 
 def estimate_tokens(s: str) -> int:
-        # Rough heuristic: ~4 characters per token
-        return max(1, int(len(s) / 4))
+    return max(1, int(len(s) / 4))
 
 def split_by_tokens(s: str, max_tokens: int) -> list[str]:
-    # Split on paragraph boundaries first, then join until size ~ max_tokens
     parts = [p for p in s.split("\n\n") if p.strip()]
     chunks: list[str] = []
     buf: list[str] = []
@@ -261,7 +356,6 @@ def split_by_tokens(s: str, max_tokens: int) -> list[str]:
     return chunks
 
 def sanitize_summary(s: str) -> str:
-    """Remove meta commentary/offers from model output."""
     if not s:
         return s
     banned = [
@@ -295,7 +389,6 @@ def summarize_once(content: str, system_msg: str = "You are a helpful assistant 
         "Focus on the main ideas. Do not include meta commentary, offers, or follow-ups. "
         "Output only the summary.\n\nCONTENT:\n" + content
     )
-    # Primary attempt with Gemini
     try:
         resp = gemini_client.models.generate_content(
             model=model,
@@ -306,7 +399,6 @@ def summarize_once(content: str, system_msg: str = "You are a helpful assistant 
             return sanitize_summary(out)
     except Exception:
         pass
-    # Strict fallback
     strict_prompt = (
         "Output exactly 5 concise bullet points summarizing the content. "
         "No intro or outro, bullets only. No meta commentary or offers.\n\nCONTENT:\n" + content
@@ -314,7 +406,7 @@ def summarize_once(content: str, system_msg: str = "You are a helpful assistant 
     try:
         resp2 = gemini_client.models.generate_content(
             model=model,
-            contents=system_msg + "\n\n" + strict_prompt,   
+            contents=system_msg + "\n\n" + strict_prompt,
         )
         out2 = (getattr(resp2, "text", None) or "").strip()
         if out2:
@@ -324,36 +416,27 @@ def summarize_once(content: str, system_msg: str = "You are a helpful assistant 
     return content[:1200]
 
 def summarize_text(text: str) -> str:
-    """Summarize using Gemini with chunking when input is very large.
-    into chunks, summarize each, then summarize the combined summaries.
-    """
-
     txt = (text or "").strip()
     if not txt:
         return ""
-
     try:
         total_tokens = estimate_tokens(txt)
-        # If over 200k tokens, split into ~10k-token chunks for safety
         if total_tokens > 200000:
             chunks = split_by_tokens(txt, max_tokens=10000)
             partial_summaries: list[str] = []
-            for idx, ch in enumerate(chunks, 1):
+            for ch in chunks:
                 try:
                     partial = summarize_once(ch, model="gemini-2.5-pro")
                 except Exception:
                     raise RuntimeError("file too large to be summarized.")
                 partial_summaries.append(partial)
-                # Throttle to respect TPM
                 time.sleep(1)
             combined = "\n\n".join(partial_summaries)
-            # Final pass on combined partials (much smaller than original)
             try:
                 return summarize_once(combined, system_msg="You write concise combined summaries of bullet-point notes.", model="gemini-2.5-pro")
             except Exception:
                 raise RuntimeError("file too large to be summarized.")
         else:
-            # Single-shot summarize
             try:
                 return summarize_once(txt, model="gemini-2.5-pro")
             except Exception:
@@ -362,9 +445,7 @@ def summarize_text(text: str) -> str:
         return txt[:1200]
 
 def ensure_minimum_summary(summary: str, size: str) -> tuple[bool, str]:
-    """Check if summary is sufficiently long for the requested size using estimate_tokens."""
     tokens = estimate_tokens(summary)
-    # Heuristic floors; can be tuned after testing
     min_requirements = {
         "small": 200,
         "medium": 600,
@@ -377,11 +458,9 @@ def ensure_minimum_summary(summary: str, size: str) -> tuple[bool, str]:
     return True, ""
 
 def parse_json_lenient(s: str):
-    """Parse JSON leniently by extracting the largest JSON object/array when needed."""
     try:
         return json.loads(s)
     except Exception:
-        # Extract the largest JSON object or array from the text
         arr_match = re.search(r"\[[\s\S]*\]", s)
         obj_match = re.search(r"\{[\s\S]*\}", s)
         candidate = None
@@ -399,7 +478,6 @@ def parse_json_lenient(s: str):
         return {}
 
 def to_index_from_answer(ans: str | int | None, options: list[str]) -> int | None:
-    """Coerce a variety of answer representations to 0..3 index."""
     if ans is None:
         return None
     if isinstance(ans, int):
@@ -423,7 +501,6 @@ def to_index_from_answer(ans: str | int | None, options: list[str]) -> int | Non
         return None
 
 def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
-    """Use Gemini to generate MCQs and return structured JSON."""
     schema_example = {
         "questions": [
             {
@@ -446,8 +523,6 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
     )
     raw = (getattr(resp, "text", None) or "").strip()
     data = parse_json_lenient(raw or "{}")
-
-    # Normalize to a list of question dicts under variable `items`
     items = []
     if isinstance(data, dict):
         if isinstance(data.get("questions"), list):
@@ -458,13 +533,10 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
             items = data["quiz"].get("questions") or []
     elif isinstance(data, list):
         items = data
-
     cleaned: list[dict] = []
-
     for q in items:
         if not isinstance(q, dict):
             continue
-        # Accept several aliases for the question text
         question = (
             str(
                 q.get("question")
@@ -473,21 +545,16 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
                 or ""
             )
         ).strip()
-        # Accept several aliases for options
         opts = q.get("options") or q.get("choices") or q.get("answers") or []
         if not isinstance(opts, list):
             opts = []
         options = [str(o).strip() for o in opts if str(o).strip()]
-        # Enforce exactly 4 options by trimming extras; skip if fewer than 3 (cannot form 4 reliably)
         if len(options) >= 4:
             options = options[:4]
         elif len(options) == 3:
-            # Try padding with a plausible distractor if model produced 3
             options.append("None of the above")
         else:
             continue
-
-        # Determine correct index from multiple possible fields
         ci = q.get("correctIndex")
         if not isinstance(ci, int):
             ci = (
@@ -495,25 +562,17 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
                 if isinstance(q.get("answerIndex"), int)
                 else to_index_from_answer(q.get("answer"), options)
             )
-        # If still None, try common keys
         if not isinstance(ci, int):
             ci = to_index_from_answer(q.get("correct"), options)
-
-        # Validate index range after any trimming/padding
         if not isinstance(ci, int) or not (0 <= ci <= 3):
-            # As a last resort, try to infer by matching any explicit "correctOption" text
             ci = to_index_from_answer(q.get("correctOption"), options)
         if not isinstance(ci, int) or not (0 <= ci <= 3):
             continue
-
         if not question or any(not o for o in options):
             continue
-
         cleaned.append({"question": question, "options": options, "correctIndex": ci})
         if len(cleaned) >= count:
             break
-
-    # If first attempt produced nothing, try a stricter retry once
     if not cleaned:
         retry_prompt = (
             "Return STRICT JSON only, no markdown, matching this schema exactly: "
@@ -533,7 +592,6 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
                     items = data.get("questions") or []
             elif isinstance(data, list):
                 items = data
-
             for q in items:
                 if not isinstance(q, dict):
                     continue
@@ -569,17 +627,11 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
                 if len(cleaned) >= count:
                     break
         except Exception:
-            # ignore and return whatever we have
             pass
-
     return cleaned
 
 @app.post("/api/quiz")
 def generate_quiz_endpoint():
-    """Generate a multiple-choice quiz from a provided summary and size using Gemini.
-    Body: { "summary": str, "size": "small|medium|large|comprehensive" }
-    Returns: { questions: [ { question, options: [str, str, str, str], correctIndex: int } ] }
-    """
     data = request.get_json(silent=True) or {}
     summary: str = (data.get("summary") or "").strip()
     size: str = (data.get("size") or "small").strip().lower()
@@ -592,16 +644,13 @@ def generate_quiz_endpoint():
         "comprehensive": 50,
     }
     count = size_map.get(size, 8)
-
     ok, msg = ensure_minimum_summary(summary, size)
     if not ok:
         return jsonify(error=msg), 400
-
     try:
         questions = generate_quiz_with_gemini(summary, count)
     except Exception as e:
         return jsonify(error=f"quiz generation failed: {e}"), 500
-
     if not questions:
         return jsonify(error="quiz generation returned no valid questions"), 500
     return jsonify(questions=questions[:count]), 200
@@ -713,3 +762,9 @@ def upload():
         if "file too large to be summarized." in msg:
             return jsonify(error="file too large to be summarized."), 400
         return jsonify(error=msg), 500
+
+# ----------------------------
+# Run Server
+# ----------------------------
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5050, debug=True)
