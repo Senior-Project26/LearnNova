@@ -4,6 +4,7 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
+import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string,
@@ -16,6 +17,8 @@ const firebaseConfig = {
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+// Firestore (Database)
+export const db = getFirestore(app);
 
 // Browser-only, optional Analytics initialization
 let analytics: Analytics | undefined;
@@ -35,4 +38,3 @@ if (typeof window !== "undefined") {
 export { app, analytics };
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
-

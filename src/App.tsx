@@ -9,9 +9,11 @@ import Study from "./pages/Study";
 import Dashboard from "./pages/Dashboard";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
+import SignIn from "./pages/SignIn";
+
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
-import SignIn from "./pages/SignIn";
+import ProtectedLayout from "@/components/ProtectedLayout";
 import Upload from "./pages/Upload";
 import Summary from "./pages/Summary";
 import Quiz from "./pages/Quiz";
@@ -26,16 +28,21 @@ const App = () => (
       <AuthProvider>
         <Router>
           <Routes>
+            {/* Public routes */}
             <Route path="/" element={<Index />} />
             <Route path="/signin" element={<SignIn />} />
             <Route path="/upload" element={<Upload />} />
             <Route path="/summary" element={<Summary />} />
             <Route path="/quiz" element={<Quiz />} />
+
+            {/* Protected routes (with Navigation bar) */}
             <Route
               path="/study"
               element={
                 <ProtectedRoute>
-                  <Study />
+                  <ProtectedLayout>
+                    <Study />
+                  </ProtectedLayout>
                 </ProtectedRoute>
               }
             />
@@ -43,7 +50,9 @@ const App = () => (
               path="/dashboard"
               element={
                 <ProtectedRoute>
-                  <Dashboard />
+                  <ProtectedLayout>
+                    <Dashboard />
+                  </ProtectedLayout>
                 </ProtectedRoute>
               }
             />
@@ -51,7 +60,9 @@ const App = () => (
               path="/profile"
               element={
                 <ProtectedRoute>
-                  <Profile />
+                  <ProtectedLayout>
+                    <Profile />
+                  </ProtectedLayout>
                 </ProtectedRoute>
               }
             />
@@ -59,11 +70,14 @@ const App = () => (
               path="/settings"
               element={
                 <ProtectedRoute>
-                  <Settings />
+                  <ProtectedLayout>
+                    <Settings />
+                  </ProtectedLayout>
                 </ProtectedRoute>
               }
             />
-            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+
+            {/* Catch-all route */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Router>
