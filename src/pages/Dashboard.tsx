@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-type QuizItem = { id: number; created_at: string | null; score: number; question_count: number };
+type QuizItem = { id: number; created_at: string | null; score: number; question_count: number; answered_count?: number; completed?: boolean };
 type NoteItem = { id: number; title: string; updated_at: string | null };
 type SummaryItem = { id: number; title?: string; created_at?: string | null };
 
 const Dashboard = () => {
+  const navigate = useNavigate();
   const [quizzes, setQuizzes] = useState<QuizItem[] | null>(null);
   const [notes, setNotes] = useState<NoteItem[] | null>(null);
   const [summaries, setSummaries] = useState<SummaryItem[] | null>(null);
@@ -87,9 +89,43 @@ const Dashboard = () => {
             ) : (
               <ul className="space-y-2">
                 {quizzes.map((q) => (
-                  <li key={q.id} className="flex items-center justify-between text-sm">
-                    <span>Quiz #{q.id} · {q.question_count} Qs</span>
-                    <span className="text-muted-foreground">Score: {q.score ?? 0}</span>
+                  <li key={q.id}>
+                    <button
+                      className="w-full flex items-center justify-between text-sm px-2 py-1 rounded hover:bg-gray-100"
+                      onClick={async () => {
+                        try {
+                          const res = await fetch(`/api/quizzes/${q.id}`, { credentials: "include" });
+                          if (!res.ok) return;
+                          const data = await res.json();
+                          const total = (data?.questions?.length ?? 0);
+                          const nextIdx = data?.next_unanswered_index ?? 0;
+                          if (!q.completed && total > 0 && nextIdx < total) {
+                            navigate("/quiz", { state: { quizId: q.id } });
+                          } 
+                        } catch {}
+                      }}
+                    >
+                      <span>Quiz #{q.id} · {q.question_count} Qs</span>
+                      <span className="text-muted-foreground">Score: {q.score ?? 0}</span>
+                    </button>
+                    {q.completed && (
+                      <div className="mt-1 flex justify-end">
+                        <button
+                          className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200"
+                          onClick={async () => {
+                            try {
+                              const res = await fetch(`/api/quizzes/${q.id}/reset`, { method: "POST", credentials: "include" });
+                              if (res.status === 204) {
+                                // After reset, jump into the quiz at start
+                                navigate("/quiz", { state: { quizId: q.id } });
+                              }
+                            } catch {}
+                          }}
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>

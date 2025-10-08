@@ -2,7 +2,7 @@
 Initialize the Postgres database `learnnova` and create core tables.
 - Reads password from env: POSTGRES_PASSWORD
 - Connects to maintenance DB `postgres` to create `learnnova` if missing
-- Then connects to `learnnova` and creates the following tables (if not exist):
+- Drops ALL tables in the `public` schema, then recreates:
   users, courses, topics, quizzes, quiz_questions, notes
 
 Run:
@@ -49,10 +49,55 @@ def ensure_database_exists():
         conn.close()
 
 
+def drop_all_tables():
+    """Drop all tables in the public schema (CASCADE)."""
+    conn = connect(PG_DB_NAME)
+    cur = conn.cursor()
+    try:
+        # Disable FK checks by cascading drops
+        cur.execute(
+            """
+            DO $$
+            DECLARE r RECORD;
+            BEGIN
+              FOR r IN (
+                SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+              ) LOOP
+                EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+              END LOOP;
+            END $$;
+            """
+        )
+        conn.commit()
+        print("Dropped all tables in 'public' schema.")
+    except Exception as e:
+        conn.rollback()
+        print("Failed to drop tables:", e)
+        sys.exit(1)
+    finally:
+        cur.close()
+        conn.close()
+
+
 def create_tables():
     conn = connect(PG_DB_NAME)
     cur = conn.cursor()
     try:
+        # Start from a clean slate
+        cur.execute(
+            """
+            DO $$
+            DECLARE r RECORD;
+            BEGIN
+              FOR r IN (
+                SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+              ) LOOP
+                EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+              END LOOP;
+            END $$;
+            """
+        )
+
         # USERS
         cur.execute(
             """
@@ -101,11 +146,10 @@ def create_tables():
             """
             CREATE TABLE IF NOT EXISTS quizzes (
                 id SERIAL PRIMARY KEY,
-                topic_id INTEGER,
+                topics TEXT[] DEFAULT '{}',
                 created_by INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 score INTEGER,
-                FOREIGN KEY (topic_id) REFERENCES topics(id),
                 FOREIGN KEY (created_by) REFERENCES users(id)
             );
             """
@@ -119,6 +163,7 @@ def create_tables():
                 quiz_id INTEGER NOT NULL,
                 question_number INTEGER NOT NULL,
                 question TEXT NOT NULL,
+                options TEXT[] DEFAULT '{}',
                 correct_answer TEXT NOT NULL,
                 user_answer TEXT,
                 is_correct BOOLEAN,
@@ -135,13 +180,12 @@ def create_tables():
                 id SERIAL PRIMARY KEY,
                 title TEXT NOT NULL,
                 course_id INTEGER,
-                topic_id INTEGER,
+                topics TEXT[] DEFAULT '{}',
                 user_id INTEGER,
                 content TEXT NOT NULL,
                 shared BOOLEAN DEFAULT FALSE,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (course_id) REFERENCES courses(id),
-                FOREIGN KEY (topic_id) REFERENCES topics(id),
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
             """

@@ -390,7 +390,9 @@ def create_note():
 
 @app.get("/api/dashboard/quizzes")
 def dashboard_quizzes():
-    """List recent quizzes for the current session user."""
+    """List recent quizzes for the current session user.
+    Returns items: [{ id, created_at, score, question_count, answered_count, completed }]
+    """
     user_id = session.get("user_id")
     if not user_id:
         return jsonify(error="unauthorized"), 401
@@ -401,8 +403,12 @@ def dashboard_quizzes():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT q.id, q.created_at, COALESCE(q.score, 0) AS score,
-                   COUNT(qq.id) AS question_count
+            SELECT
+              q.id,
+              q.created_at,
+              COALESCE(q.score, 0) AS score,
+              COUNT(qq.id) AS question_count,
+              SUM(CASE WHEN COALESCE(NULLIF(qq.user_answer, ''), NULL) IS NOT NULL THEN 1 ELSE 0 END) AS answered_count
             FROM quizzes q
             LEFT JOIN quiz_questions qq ON qq.quiz_id = q.id
             WHERE q.created_by = %s
@@ -414,15 +420,22 @@ def dashboard_quizzes():
         )
         rows = cur.fetchall()
         cur.close()
-        items = [
-            {
-                "id": r[0],
-                "created_at": (r[1].isoformat() if r[1] else None),
-                "score": r[2],
-                "question_count": r[3],
-            }
-            for r in rows
-        ]
+        items = []
+        for r in rows:
+            qid = r[0]
+            created_at = r[1]
+            score = r[2]
+            question_count = r[3] or 0
+            answered_count = r[4] or 0
+            completed = (question_count > 0 and answered_count >= question_count)
+            items.append({
+                "id": qid,
+                "created_at": (created_at.isoformat() if created_at else None),
+                "score": score,
+                "question_count": question_count,
+                "answered_count": answered_count,
+                "completed": completed,
+            })
         return jsonify(items=items), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
@@ -1055,7 +1068,211 @@ def generate_quiz_endpoint():
         return jsonify(error=f"quiz generation failed: {e}"), 500
     if not questions:
         return jsonify(error="quiz generation returned no valid questions"), 500
-    return jsonify(questions=questions[:count]), 200
+
+    # Persist quiz + questions
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Ensure session user exists (DB may have been reset)
+        cur.execute("SELECT 1 FROM users WHERE id = %s", (user_id,))
+        if cur.fetchone() is None:
+            cur.close()
+            return jsonify(error="invalid session: user not found. Please sign in again."), 401
+        # Create quiz row: topics empty array, score 0
+        cur.execute(
+            """
+            INSERT INTO quizzes (topics, created_by, score)
+            VALUES (ARRAY[]::TEXT[], %s, 0)
+            RETURNING id
+            """,
+            (user_id,),
+        )
+        quiz_id = cur.fetchone()[0]
+
+        # Insert quiz questions and collect their ids
+        inserted_question_ids: list[int] = []
+        for i, q in enumerate(questions[:count], start=1):
+            question = q.get("question")
+            options = q.get("options") or []
+            ci = q.get("correctIndex")
+            try:
+                correct_answer = options[ci] if isinstance(ci, int) and 0 <= ci < len(options) else None
+            except Exception:
+                correct_answer = None
+            if not question or correct_answer is None:
+                continue
+            cur.execute(
+                """
+                INSERT INTO quiz_questions (quiz_id, question_number, question, options, correct_answer, user_answer, is_correct)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (quiz_id, i, question, options, correct_answer, None, None),
+            )
+            qid = cur.fetchone()[0]
+            inserted_question_ids.append(qid)
+        conn.commit()
+        cur.close()
+        return jsonify(quiz_id=quiz_id, questions=questions[:count], question_ids=inserted_question_ids), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.post("/api/quiz/answer")
+def record_quiz_answer():
+    """Record a user's answer to a quiz question and update score if newly correct.
+    Body: { quiz_id: int, question_id?: int, question_number?: int, user_answer: str }
+    Returns 200 with { correct: bool, score_incremented: bool }
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    quiz_id = data.get("quiz_id")
+    question_id = data.get("question_id")
+    question_number = data.get("question_number")
+    user_answer = (data.get("user_answer") or "").strip()
+    if not isinstance(quiz_id, int):
+        return jsonify(error="quiz_id required"), 400
+    if not question_id and not isinstance(question_number, int):
+        return jsonify(error="question_id or question_number required"), 400
+
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Verify quiz ownership
+        cur.execute("SELECT id FROM quizzes WHERE id = %s AND created_by = %s", (quiz_id, user_id))
+        row = cur.fetchone()
+        if not row:
+            return jsonify(error="not found"), 404
+
+        # Resolve question id and fetch current state
+        if not question_id:
+            cur.execute(
+                "SELECT id, correct_answer, is_correct FROM quiz_questions WHERE quiz_id = %s AND question_number = %s",
+                (quiz_id, question_number),
+            )
+        else:
+            cur.execute(
+                "SELECT id, correct_answer, is_correct FROM quiz_questions WHERE id = %s AND quiz_id = %s",
+                (question_id, quiz_id),
+            )
+        qrow = cur.fetchone()
+        if not qrow:
+            return jsonify(error="question not found"), 404
+        qid, correct_answer, prev_is_correct = qrow
+
+        # Determine correctness
+        is_correct = (user_answer == (correct_answer or "")) if user_answer else False
+
+        # Update question
+        cur.execute(
+            "UPDATE quiz_questions SET user_answer = %s, is_correct = %s WHERE id = %s",
+            (user_answer or None, is_correct, qid),
+        )
+
+        score_incremented = False
+        if is_correct and prev_is_correct is not True:
+            cur.execute("UPDATE quizzes SET score = COALESCE(score, 0) + 1 WHERE id = %s", (quiz_id,))
+            score_incremented = True
+
+        conn.commit()
+        cur.close()
+        return jsonify(correct=is_correct, score_incremented=score_incremented), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.get("/api/quizzes/<int:qzid>")
+def get_quiz(qzid: int):
+    """Return a quiz with its questions for the session user, plus the first unanswered index.
+    Response: { id, created_at, score, questions: [{ id, question_number, question, options, user_answer, is_correct, correctIndex }], next_unanswered_index }
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, created_at, COALESCE(score,0) FROM quizzes WHERE id = %s AND created_by = %s", (qzid, user_id))
+        q = cur.fetchone()
+        if not q:
+            return jsonify(error="not found"), 404
+        cur.execute(
+            """
+            SELECT id, question_number, question, options, correct_answer, user_answer, is_correct
+            FROM quiz_questions
+            WHERE quiz_id = %s
+            ORDER BY question_number ASC
+            """,
+            (qzid,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        questions = []
+        next_idx = None
+        for rid, num, question, options, correct_answer, user_answer, is_correct in rows:
+            if next_idx is None and (user_answer is None or str(user_answer).strip() == ""):
+                next_idx = int(num) - 1
+            questions.append({
+                "id": rid,
+                "question_number": num,
+                "question": question,
+                "options": options or [],
+                "correctIndex": ((options or []).index(correct_answer) if (options and correct_answer in (options or [])) else None),
+                "user_answer": user_answer,
+                "is_correct": is_correct,
+            })
+        return jsonify(
+            id=q[0],
+            created_at=(q[1].isoformat() if q[1] else None),
+            score=q[2],
+            questions=questions,
+            next_unanswered_index=(next_idx if next_idx is not None else 0),
+        ), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.post("/api/quizzes/<int:qzid>/reset")
+def reset_quiz(qzid: int):
+    """Reset quiz score to 0 and clear all user_answer/is_correct for its questions."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Verify ownership
+        cur.execute("SELECT 1 FROM quizzes WHERE id = %s AND created_by = %s", (qzid, user_id))
+        if cur.fetchone() is None:
+            return jsonify(error="not found"), 404
+        cur.execute("UPDATE quizzes SET score = 0 WHERE id = %s", (qzid,))
+        cur.execute("UPDATE quiz_questions SET user_answer = NULL, is_correct = NULL WHERE quiz_id = %s", (qzid,))
+        conn.commit()
+        cur.close()
+        return ("", 204)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
 
 def generate_study_guide(text: str) -> str:
     """Use Gemini to expand a summary/notes into a structured, comprehensive study guide.

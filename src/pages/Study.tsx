@@ -199,7 +199,7 @@ const Study = () => {
                   { icon: <Sparkles className="h-4 w-4 mr-2" />, label: "Generate Flashcards (AI)" },
                   { icon: <Brain className="h-4 w-4 mr-2" />, label: "Generate Quiz", navigateTo: "/quiz" },
                   { icon: <FileUp className="h-4 w-4 mr-2" />, label: "Upload Notes or Book excerpts", navigateTo: "/upload" },
-                  { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Make Custom Quiz" },
+                  { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Create Study Guide", navigateTo: "/study-guide" },
                 ].map((action, index) => (
                   <Button
                     key={index}

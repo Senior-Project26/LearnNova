@@ -20,7 +20,7 @@ export default function Quiz() {
   const [size, setSize] = useState<QuizSize>("small");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const location = useLocation() as { state?: { summary?: string } };
+  const location = useLocation() as { state?: { summary?: string; quizId?: number } };
 
   // Quiz runtime state
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
@@ -28,10 +28,47 @@ export default function Quiz() {
   const [selected, setSelected] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<"correct" | "incorrect" | null>(null);
   const [score, setScore] = useState(0);
+  const [quizId, setQuizId] = useState<number | null>(null);
+  const [questionIds, setQuestionIds] = useState<number[]>([]);
 
-  // Prefill summary from navigation state or last upload (if present)
+  // Prefill from quizId (resume) or from navigation summary / sessionStorage
   useEffect(() => {
     try {
+      const qid = location.state?.quizId;
+      if (typeof qid === "number") {
+        // Load existing quiz for resume
+        (async () => {
+          setLoading(true);
+          try {
+            const res = await fetch(`/api/quizzes/${qid}`, { credentials: "include" });
+            const data = await res.json().catch(() => ({} as any));
+            if (!res.ok) {
+              setError((data as any)?.error || `Failed to load quiz #${qid}`);
+              setLoading(false);
+              return;
+            }
+            const serverQs = (data?.questions || []) as Array<{
+              id: number; question: string; options: string[]; correctIndex: number | null;
+            }>;
+            const mapped: QuizQuestion[] = serverQs.map(q => ({
+              question: q.question,
+              options: q.options || [],
+              correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0,
+            }));
+            setQuestions(mapped.length ? mapped : null);
+            setQuizId(qid);
+            setQuestionIds(serverQs.map(q => q.id));
+            const nextIdx = Math.max(0, Math.min((data?.next_unanswered_index ?? 0), Math.max(0, mapped.length)));
+            setIdx(nextIdx);
+            setScore(Number(data?.score ?? 0));
+            setLoading(false);
+          } catch (e: any) {
+            setError(e?.message || "Failed to load quiz");
+            setLoading(false);
+          }
+        })();
+        return;
+      }
       // 1) location.state from Summary page navigation
       const stateSummary = location.state?.summary;
       if (typeof stateSummary === "string" && stateSummary.trim()) {
@@ -51,12 +88,12 @@ export default function Quiz() {
   const needsLonger = size === "large" || size === "comprehensive";
 
   const disableSubmit = useMemo(() => summary.trim().length < (needsLonger ? 600 : 60), [summary, needsLonger]);
-
   // Request quiz from backend (Gemini 2.5 pro under the hood)
   const requestQuiz = async () => {
     setError(null);
     setLoading(true);
     setQuestions(null);
+    setIdx(0);
     setSelected(null);
     setFeedback(null);
     setScore(0);
@@ -65,14 +102,17 @@ export default function Quiz() {
     const res = await fetch("/api/quiz", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ summary, size }),
     });
-      const data: QuizResponse | { error?: string } = await res.json().catch(() => ({} as any));
+      const data: (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string } = await res.json().catch(() => ({} as any));
       if (!res.ok) {
         throw new Error((data as any)?.error || `Quiz generation failed (${res.status})`);
       }
       const qs = (data as QuizResponse).questions || [];
       if (!qs.length) throw new Error("No questions returned");
+      setQuizId((data as any)?.quiz_id ?? null);
+      setQuestionIds(((data as any)?.question_ids as number[]) || []);
       setQuestions(qs);
     } catch (e: any) {
       setError(e?.message || "Quiz request failed");
@@ -85,11 +125,27 @@ export default function Quiz() {
   const current = questions ? questions[idx] : null;
   const total = questions?.length || 0;
 
-  const onSubmitAnswer = () => {
+  const onSubmitAnswer = async () => {
     if (selected == null || !current) return;
     const correct = selected === current.correctIndex;
     setFeedback(correct ? "correct" : "incorrect");
     if (correct) setScore((s) => s + 1);
+
+    // Persist answer in background
+    try {
+      const qid = questionIds[idx];
+      await fetch("/api/quiz/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          quiz_id: quizId,
+          question_id: qid,
+          question_number: idx + 1,
+          user_answer: current.options[selected],
+        }),
+      });
+    } catch {}
   };
 
   const nextQuestion = () => {
@@ -102,13 +158,46 @@ export default function Quiz() {
     }
   };
 
-  const restart = () => {
+  const restart = async () => {
+    setError(null);
+    // If resuming an existing quiz, call reset endpoint then reload it
+    if (quizId) {
+      try {
+        setLoading(true);
+        const res = await fetch(`/api/quizzes/${quizId}/reset`, { method: "POST", credentials: "include" });
+        if (res.status === 204) {
+          // Reload quiz from server after reset
+          const getRes = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
+          const data = await getRes.json().catch(() => ({} as any));
+          if (getRes.ok) {
+            const serverQs = (data?.questions || []) as Array<{ id: number; question: string; options: string[]; correctIndex: number | null; }>;
+            const mapped: QuizQuestion[] = serverQs.map(q => ({ question: q.question, options: q.options || [], correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0 }));
+            setQuestions(mapped.length ? mapped : null);
+            setQuestionIds(serverQs.map(q => q.id));
+            setIdx(0);
+            setSelected(null);
+            setFeedback(null);
+            setScore(0);
+          } else {
+            setError((data as any)?.error || "Failed to reload quiz after reset");
+          }
+        } else {
+          const err = await res.json().catch(() => ({} as any));
+          setError(err?.error || "Failed to reset quiz");
+        }
+      } catch (e: any) {
+        setError(e?.message || "Failed to reset quiz");
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+    // Otherwise, local reset for a new quiz flow
     setQuestions(null);
     setIdx(0);
     setSelected(null);
     setFeedback(null);
     setScore(0);
-    setError(null);
   };
 
   return (
@@ -204,7 +293,7 @@ export default function Quiz() {
                 <div className="space-x-2">
                   <span className="font-medium">Finished!</span>
                   <span>Final score: {score} / {questions.length}</span>
-                  <button onClick={restart} className="ml-3 px-3 py-1.5 bg-blue-600 text-white rounded">New Quiz</button>
+                  <button onClick={restart} className="ml-3 px-3 py-1.5 bg-blue-600 text-white rounded">{quizId ? "Retry Quiz" : "New Quiz"}</button>
                 </div>
               )}
             </div>
