@@ -9,9 +9,11 @@ import Dashboard from "./pages/Dashboard";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import SignIn from "./pages/SignIn";
+import SignUp from "./pages/SignUp";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import ProtectedLayout from "@/components/ProtectedLayout";
+import SessionProtectedRoute from "@/components/SessionProtectedRoute";
 import Upload from "./pages/Upload";
 import Summary from "./pages/Summary";
 import NotFound from "./pages/NotFound";
@@ -31,50 +33,78 @@ const App = () => (
             {/* Public routes */}
             <Route path="/" element={<Index />} />
             <Route path="/signin" element={<SignIn />} />
-            <Route path="/upload" element={<Upload />} />
+            <Route path="/signup" element={<SignUp />} />
+            <Route
+              path="/upload"
+              element={
+                <SessionProtectedRoute>
+                  <ProtectedLayout>
+                    <Upload />
+                  </ProtectedLayout>
+                </SessionProtectedRoute>
+              }
+            />
             <Route path="/summary" element={<Summary />} />
-            <Route path="/quiz" element={<Quiz />} />
-            <Route path="/study-guide" element={<StudyGuide />} />
+            <Route
+              path="/quiz"
+              element={
+                <SessionProtectedRoute>
+                  <ProtectedLayout>
+                    <Quiz />
+                  </ProtectedLayout>
+                </SessionProtectedRoute>
+              }
+            />
+            <Route
+              path="/study-guide"
+              element={
+                <SessionProtectedRoute>
+                  <ProtectedLayout>
+                    <StudyGuide />
+                  </ProtectedLayout>
+                </SessionProtectedRoute>
+              }
+            />
 
             {/* Protected routes (with Navigation bar) */}
             <Route
               path="/study"
               element={
-                <ProtectedRoute>
+                <SessionProtectedRoute>
                   <ProtectedLayout>
                     <Study />
                   </ProtectedLayout>
-                </ProtectedRoute>
+                </SessionProtectedRoute>
               }
             />
             <Route
               path="/dashboard"
               element={
-                <ProtectedRoute>
+                <SessionProtectedRoute>
                   <ProtectedLayout>
                     <Dashboard />
                   </ProtectedLayout>
-                </ProtectedRoute>
+                </SessionProtectedRoute>
               }
             />
             <Route
               path="/profile"
               element={
-                <ProtectedRoute>
+                <SessionProtectedRoute>
                   <ProtectedLayout>
                     <Profile />
                   </ProtectedLayout>
-                </ProtectedRoute>
+                </SessionProtectedRoute>
               }
             />
             <Route
               path="/settings"
               element={
-                <ProtectedRoute>
+                <SessionProtectedRoute>
                   <ProtectedLayout>
                     <Settings />
                   </ProtectedLayout>
-                </ProtectedRoute>
+                </SessionProtectedRoute>
               }
             />
 

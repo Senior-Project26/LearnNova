@@ -26,6 +26,11 @@ CORS(app, supports_credentials=True)
 
 # Load environment for local dev
 load_dotenv()
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
+app.config.update(
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=False,
+)
 
 # Initialize API clients (Study Buddy)
 vision_client = vision.ImageAnnotatorClient()
@@ -50,10 +55,10 @@ def get_connection():
             host="localhost",
             database="learnnova",
             user="postgres",
-            password="yourpassword"  # ← replace with your own or env var
+            password=os.getenv("POSTGRES_PASSWORD", "")
         )
     except Exception as e:
-        print("Database connection failed:", e)
+        print("Database connection failed:", e, flush=True)
         return None
 
 # ----------------------------
@@ -112,6 +117,7 @@ def login():
     else:
         cur.execute('SELECT id, username, password_hash FROM users WHERE username = %s', (input_value,))
     user = cur.fetchone()
+    
 
     cur.close()
     conn.close()
@@ -120,7 +126,8 @@ def login():
         return jsonify({"error": "User not found"}), 404
 
     user_id, username, password_hash = user
-    if not check_password_hash(password_hash, password):
+    pw_ok = check_password_hash(password_hash, password)
+    if not pw_ok:
         return jsonify({"error": "Incorrect password"}), 401
 
     session["user_id"] = user_id
@@ -141,7 +148,38 @@ def firebase_login():
         decoded_token = firebase_auth.verify_id_token(token)
         user_email = decoded_token.get("email")
         user_name = decoded_token.get("name", "NoName")
-        return jsonify({"message": "Firebase login verified", "email": user_email, "name": user_name})
+        # Upsert user in Postgres and set Flask session
+        if not user_email:
+            return jsonify({"error": "email missing from firebase token"}), 400
+
+        conn = get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection error"}), 500
+        cur = conn.cursor()
+        try:
+            cur.execute('SELECT id, username FROM users WHERE email = %s', (user_email,))
+            row = cur.fetchone()
+            if row:
+                user_id, username = row
+            else:
+                # Derive a simple username if name missing
+                base_username = (user_name or user_email.split("@")[0] or "user").strip()[:32]
+                cur.execute(
+                    'INSERT INTO users (username, email) VALUES (%s, %s) RETURNING id',
+                    (base_username, user_email),
+                )
+                user_id = cur.fetchone()[0]
+                username = base_username
+                conn.commit()
+            session["user_id"] = user_id
+            session["username"] = username
+            return jsonify({"message": "Firebase login verified", "user_id": user_id, "username": username}), 200
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cur.close()
+            conn.close()
     except Exception as e:
         return jsonify({"error": str(e)}), 401
 
@@ -152,6 +190,370 @@ def firebase_login():
 def not_found(e):
     return jsonify({"error": "Not Found - handled by frontend"}), 404
 
+# ----------------------------
+# Courses: list and create
+# ----------------------------
+
+@app.get("/api/session")
+def get_session_user():
+    """Return current Flask session user or 401."""
+    uid = session.get("user_id")
+    uname = session.get("username")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+    return jsonify(user_id=uid, username=uname), 200
+
+# ----------------------------
+# Client log sink (to surface frontend logs in server terminal)
+# ----------------------------
+@app.post("/api/client-log")
+def client_log():
+    try:
+        data = request.get_json(silent=True) or {}
+        level = (data.get("level") or "info").upper()
+        msg = str(data.get("message") or "").strip()
+        ctx = data.get("context")
+        print(f"[CLIENT-{level}] {msg} | context={ctx}", flush=True)
+        return ("", 204)
+    except Exception as e:
+        print("[CLIENT-LOG ERROR]", e, flush=True)
+        return ("", 204)
+    
+@app.get("/api/courses")
+def list_courses():
+    """List courses for the current session user, ordered by id ASC."""
+    try:
+        user_id = session.get("user_id")
+        if not user_id:
+            return jsonify(error="unauthorized"), 401
+        conn = get_connection()
+        if not conn:
+            return jsonify(error="Database connection error"), 500
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, description, created_by FROM courses WHERE created_by = %s ORDER BY id ASC",
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        items = [
+            {"id": r[0], "name": r[1], "description": r[2], "created_by": r[3]}
+            for r in rows
+        ]
+        return jsonify(courses=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+@app.post("/api/courses")
+def create_course():
+    """Create a course with { name, description } for the current session user and return it."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    description = (data.get("description") or "").strip()
+    if not name or not description:
+        return jsonify(error="name and description are required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO courses (name, description, created_by) VALUES (%s, %s, %s) RETURNING id",
+            (name, description, user_id),
+        )
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        return jsonify(course={"id": new_id, "name": name, "description": description, "created_by": user_id}), 201
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.delete("/api/summaries/<int:sid>")
+def delete_summary(sid: int):
+    """Delete a summary owned by the current session user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM summaries WHERE id = %s AND user_id = %s RETURNING id", (sid, user_id))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        return ("", 204)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.post("/api/summaries")
+def create_summary():
+    """Create a summary for the current session user.
+    Body: { title: str, content: str }
+    Returns: { id, title, created_at }
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "Summary").strip() or "Summary"
+    content = (data.get("content") or "").strip()
+    if not content:
+        return jsonify(error="content is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Ensure table exists (lightweight migration)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS summaries (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO summaries (user_id, title, content)
+            VALUES (%s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (user_id, title, content),
+        )
+        sid, created_at = cur.fetchone()
+        conn.commit()
+        cur.close()
+        return jsonify(id=sid, title=title, created_at=(created_at.isoformat() if created_at else None)), 201
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+        
+@app.post("/api/notes")
+def create_note():
+    """Create a note for the current session user.
+    Body: { title: str, content: str, course_id?: int, topic_id?: int }
+    Returns: { id, title, updated_at }
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "Untitled").strip() or "Untitled"
+    content = (data.get("content") or "").strip()
+    course_id = data.get("course_id")
+    topic_id = data.get("topic_id")
+    if not content:
+        return jsonify(error="content is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO notes (title, course_id, topic_id, user_id, content)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, updated_at
+            """,
+            (title, course_id, topic_id, user_id, content),
+        )
+        nid, updated_at = cur.fetchone()
+        conn.commit()
+        cur.close()
+        return jsonify(id=nid, title=title, updated_at=(updated_at.isoformat() if updated_at else None)), 201
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.get("/api/dashboard/quizzes")
+def dashboard_quizzes():
+    """List recent quizzes for the current session user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT q.id, q.created_at, COALESCE(q.score, 0) AS score,
+                   COUNT(qq.id) AS question_count
+            FROM quizzes q
+            LEFT JOIN quiz_questions qq ON qq.quiz_id = q.id
+            WHERE q.created_by = %s
+            GROUP BY q.id
+            ORDER BY q.created_at DESC NULLS LAST, q.id DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        items = [
+            {
+                "id": r[0],
+                "created_at": (r[1].isoformat() if r[1] else None),
+                "score": r[2],
+                "question_count": r[3],
+            }
+            for r in rows
+        ]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+    
+@app.get("/api/summaries/<int:sid>")
+def get_summary(sid: int):
+    """Fetch a single summary (title, content) for the current session user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Ensure table exists
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS summaries (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+            """
+        )
+        cur.execute(
+            "SELECT id, title, content, created_at FROM summaries WHERE id = %s AND user_id = %s",
+            (sid, user_id),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return jsonify(error="not found"), 404
+        return jsonify(id=row[0], title=row[1], content=row[2], created_at=(row[3].isoformat() if row[3] else None)), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.get("/api/dashboard/notes")
+def dashboard_notes():
+    """List recent notes for the current session user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, title, updated_at
+            FROM notes
+            WHERE user_id = %s
+            ORDER BY updated_at DESC NULLS LAST, id DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        items = [
+            {
+                "id": r[0],
+                "title": r[1],
+                "updated_at": (r[2].isoformat() if r[2] else None),
+            }
+            for r in rows
+        ]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.get("/api/dashboard/summaries")
+def dashboard_summaries():
+    """List recent summaries for the current session user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Ensure table exists in case it hasn't been created yet
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS summaries (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+            """
+        )
+        cur.execute(
+            """
+            SELECT id, title, created_at
+            FROM summaries
+            WHERE user_id = %s
+            ORDER BY created_at DESC NULLS LAST, id DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        items = [
+            {
+                "id": r[0],
+                "title": r[1],
+                "created_at": (r[2].isoformat() if r[2] else None),
+            }
+            for r in rows
+        ]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+    
 # ============================
 # Study Buddy: Helpers & Endpoints
 # ============================
@@ -755,6 +1157,7 @@ def upload():
             size=size,
             kind=kind,
             summary=summary,
+            extracted_text=extracted_text,
         ), 200
     except Exception as e:
         # If summarization indicates size issue, return a 400 with message

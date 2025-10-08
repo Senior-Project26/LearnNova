@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 // Types
 type QuizSize = "small" | "medium" | "large" | "comprehensive";
@@ -19,6 +20,7 @@ export default function Quiz() {
   const [size, setSize] = useState<QuizSize>("small");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const location = useLocation() as { state?: { summary?: string } };
 
   // Quiz runtime state
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
@@ -27,15 +29,20 @@ export default function Quiz() {
   const [feedback, setFeedback] = useState<"correct" | "incorrect" | null>(null);
   const [score, setScore] = useState(0);
 
-  // Prefill summary from last upload (if present)
+  // Prefill summary from navigation state or last upload (if present)
   useEffect(() => {
     try {
+      // 1) location.state from Summary page navigation
+      const stateSummary = location.state?.summary;
+      if (typeof stateSummary === "string" && stateSummary.trim()) {
+        setSummary(stateSummary);
+        return;
+      }
+      // 2) sessionStorage fallback set by Summary.quizMe()
       const last = sessionStorage.getItem("lastUploadResult");
-      if (last && !summary) {
+      if (last) {
         const parsed = JSON.parse(last);
-        if (parsed?.summary && typeof parsed.summary === "string") {
-          setSummary(parsed.summary);
-        }
+        if (parsed?.summary && typeof parsed.summary === "string") setSummary(parsed.summary);
       }
     } catch {}
   }, []);
@@ -50,17 +57,16 @@ export default function Quiz() {
     setError(null);
     setLoading(true);
     setQuestions(null);
-    setIdx(0);
     setSelected(null);
     setFeedback(null);
     setScore(0);
 
     try {
-      const res = await fetch("http://127.0.0.1:5050/api/quiz", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ summary, size }),
-      });
+    const res = await fetch("/api/quiz", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ summary, size }),
+    });
       const data: QuizResponse | { error?: string } = await res.json().catch(() => ({} as any));
       if (!res.ok) {
         throw new Error((data as any)?.error || `Quiz generation failed (${res.status})`);
