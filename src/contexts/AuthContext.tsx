@@ -25,6 +25,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const signInWithGoogle = async () => {
     await signInWithPopup(auth, googleProvider);
+    // Sync Firebase login to Flask session
+    try {
+      const current = auth.currentUser;
+      if (current) {
+        const idToken = await current.getIdToken();
+        await fetch("http://127.0.0.1:5050/api/firebase-login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ idToken }),
+        });
+      }
+    } catch (e) {
+      // ignore; backend session may already be set or will be set on next effect
+    }
   };
 
   const signOutUser = async () => {
