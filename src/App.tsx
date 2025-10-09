@@ -1,8 +1,11 @@
+import React from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import CosmicBackdrop from "@/components/cosmic/CosmicBackdrop";
+
 import Index from "./pages/Index";
 import Study from "./pages/Study";
 import Dashboard from "./pages/Dashboard";
@@ -27,6 +30,7 @@ const App = () => (
       <Sonner />
       <AuthProvider>
         <Router>
+          <CosmicBackdrop />
           <Routes>
             {/* Public routes */}
             <Route path="/" element={<Index />} />

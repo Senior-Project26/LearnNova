@@ -1,10 +1,15 @@
 from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, session
 from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
-from google import genai
+import google.generativeai as genai
 from google.cloud import vision
+import psycopg2
+import firebase_admin
+from firebase_admin import credentials, auth as firebase_auth
 import psycopg2
 import firebase_admin
 from firebase_admin import credentials, auth as firebase_auth
