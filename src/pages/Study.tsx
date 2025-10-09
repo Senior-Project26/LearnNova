@@ -74,16 +74,7 @@ const Study = () => {
       : 0;
 
   return (
-    <div
-      className="relative min-h-screen overflow-hidden px-4 pt-24 pb-12"
-      style={{
-        background:
-          "radial-gradient(circle at top left, #4C1D3D 0%, #852E4E 40%, #A33757 70%, #DC586D 90%)",
-      }}
-    >
-      {/* Glow overlay */}
-      <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_30%_20%,rgba(255,187,148,0.1),transparent_70%)] blur-3xl"></div>
-
+    <div className="relative min-h-screen overflow-hidden px-4 pt-24 pb-12">
       <div className="relative container mx-auto space-y-8 text-white">
         {/* --- Header --- */}
         <div className="text-center space-y-2">

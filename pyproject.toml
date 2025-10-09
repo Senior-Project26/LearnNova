@@ -15,4 +15,6 @@ dependencies = [
     "pypdf>=6.1.1",
     "pypdf2>=3.0.1",
     "python-dotenv>=1.1.1",
+    "firebase-admin>=6.6.0",
+    "psycopg2-binary>=2.9.9",
 ]
