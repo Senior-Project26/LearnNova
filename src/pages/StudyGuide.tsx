@@ -10,16 +10,16 @@ export default function StudyGuide() {
   useEffect(() => {
     try {
       const last = sessionStorage.getItem("lastUploadResult");
-      if (last && !text) {
+      if (last) {
         const parsed = JSON.parse(last);
         if (parsed?.summary && typeof parsed.summary === "string") {
-          setText(parsed.summary);
+          setText((prev) => prev || parsed.summary);
         }
       }
     } catch {}
   }, []);
 
-  const disableSubmit = useMemo(() => text.trim().length < 300, [text]);
+  const disableSubmit = useMemo(() => text.trim().length < 240, [text]);
 
   const generateGuide = async () => {
     setError(null);
@@ -50,7 +50,7 @@ export default function StudyGuide() {
           <label className="block">
             <span className="font-medium">Paste notes or summary</span>
             <textarea
-              className="mt-2 w-full min-h-40 p-3 border rounded"
+              className="mt-2 w-full min-h-[10rem] p-3 border rounded"
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder="Paste your notes or summary here..."
