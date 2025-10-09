@@ -11,6 +11,7 @@ from firebase_admin import credentials, auth as firebase_auth
 import os
 import io
 import json
+import unicodedata
 import re
 from PIL import Image
 import time
@@ -101,6 +102,309 @@ def signup():
         cur.close()
         conn.close()
 
+@app.get("/api/dashboard/study_guides")
+def dashboard_study_guides():
+    """Return up to 5 most recent study guides (highest id) for current user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Ensure table exists
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS study_guides (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            SELECT id, title
+            FROM study_guides
+            WHERE user_id = %s
+            ORDER BY id DESC
+            LIMIT 5
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        items = [{"id": r[0], "title": r[1]} for r in rows]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.get("/api/study_guides/<int:gid>")
+def get_study_guide(gid: int):
+    """Fetch a single study guide for current user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, title, content FROM study_guides WHERE id = %s AND user_id = %s", (gid, user_id))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return jsonify(error="not found"), 404
+        return jsonify(id=row[0], title=row[1], content=row[2])
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.patch("/api/study_guides/<int:gid>")
+def rename_study_guide(gid: int):
+    """Rename a study guide title. Body: { title }"""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify(error="title is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE study_guides SET title = %s WHERE id = %s AND user_id = %s", (title, gid, user_id))
+        if cur.rowcount == 0:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        cur.close()
+        return jsonify(id=gid, title=title), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.delete("/api/study_guides/<int:gid>")
+def delete_study_guide(gid: int):
+    """Delete a study guide."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM study_guides WHERE id = %s AND user_id = %s", (gid, user_id))
+        if cur.rowcount == 0:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        cur.close()
+        return ("", 204)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.patch("/api/quizzes/<int:qid>")
+def rename_quiz(qid: int):
+    """Rename a quiz title for the current session user. Body: { title: str }
+    This will add a `title` column to the `quizzes` table if it doesn't exist.
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify(error="title is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Ensure column exists (safe migration)
+        cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS title TEXT;")
+        # Ensure ownership
+        cur.execute("SELECT id FROM quizzes WHERE id = %s AND created_by = %s", (qid, user_id))
+        if not cur.fetchone():
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        cur.execute("UPDATE quizzes SET title = %s WHERE id = %s", (title, qid))
+        conn.commit()
+        return jsonify(id=qid, title=title), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.get("/api/all_notes")
+def list_all_notes():
+    """List ALL notes for the current session user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, title, updated_at
+            FROM notes
+            WHERE user_id = %s
+            ORDER BY updated_at DESC NULLS LAST, id DESC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        items = [
+            {"id": r[0], "title": r[1], "updated_at": (r[2].isoformat() if r[2] else None)} for r in rows
+        ]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.patch("/api/summaries/<int:sid>")
+def rename_summary(sid: int):
+    """Rename a summary's title owned by the current session user. Body: { title: str }"""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify(error="title is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE summaries SET title = %s WHERE id = %s AND user_id = %s RETURNING id", (title, sid, user_id))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        return jsonify(id=sid, title=title), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.patch("/api/notes/<int:nid>")
+def rename_note(nid: int):
+    """Rename a note's title owned by the current session user. Body: { title: str }"""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify(error="title is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE notes SET title = %s WHERE id = %s AND user_id = %s RETURNING id", (title, nid, user_id))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        return jsonify(id=nid, title=title), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.delete("/api/notes/<int:nid>")
+def delete_note(nid: int):
+    """Delete a note owned by the current session user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM notes WHERE id = %s AND user_id = %s RETURNING id", (nid, user_id))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        return ("", 204)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.get("/api/all_summaries")
+def list_all_summaries():
+    """List ALL summaries for the current session user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Ensure table exists in case it hasn't been created yet
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS summaries (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+            """
+        )
+        cur.execute(
+            """
+            SELECT id, title, created_at
+            FROM summaries
+            WHERE user_id = %s
+            ORDER BY created_at DESC NULLS LAST, id DESC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        items = [
+            {"id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)} for r in rows
+        ]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+        
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json()
@@ -275,6 +579,31 @@ def create_course():
     finally:
         conn.close()
 
+@app.get("/api/notes/<int:nid>")
+def get_note(nid: int):
+    """Fetch a single note (title, content) for the current session user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, content, updated_at FROM notes WHERE id = %s AND user_id = %s",
+            (nid, user_id),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return jsonify(error="not found"), 404
+        return jsonify(id=row[0], title=row[1], content=row[2], updated_at=(row[3].isoformat() if row[3] else None)), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
 @app.delete("/api/summaries/<int:sid>")
 def delete_summary(sid: int):
     """Delete a summary owned by the current session user."""
@@ -349,10 +678,88 @@ def create_summary():
     finally:
         conn.close()
         
+@app.post("/api/study_guides")
+def create_study_guide():
+    """Create a study guide for the current session user.
+    Body: { title: str, content: str }
+    Returns: { id, title, created_at }
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "Study Guide").strip() or "Study Guide"
+    content = (data.get("content") or "").strip()
+    if not content:
+        return jsonify(error="content is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Ensure table exists
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS study_guides (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO study_guides (user_id, title, content)
+            VALUES (%s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (user_id, title, content),
+        )
+        gid, created_at = cur.fetchone()
+        conn.commit()
+        cur.close()
+        return jsonify(id=gid, title=title, created_at=(created_at.isoformat() if created_at else None)), 201
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+@app.delete("/api/quizzes/<int:qid>")
+def delete_quiz(qid: int):
+    """Delete a quiz owned by the current session user along with its questions."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Ensure quiz belongs to user
+        cur.execute("SELECT id FROM quizzes WHERE id = %s AND created_by = %s", (qid, user_id))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        # Delete related questions then the quiz
+        cur.execute("DELETE FROM quiz_questions WHERE quiz_id = %s", (qid,))
+        cur.execute("DELETE FROM quizzes WHERE id = %s", (qid,))
+        conn.commit()
+        return ("", 204)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+        
 @app.post("/api/notes")
 def create_note():
     """Create a note for the current session user.
-    Body: { title: str, content: str, course_id?: int, topic_id?: int }
+    Body: { title: str, content: str, course_id?: int, topics?: list[str] }
     Returns: { id, title, updated_at }
     """
     user_id = session.get("user_id")
@@ -362,7 +769,15 @@ def create_note():
     title = (data.get("title") or "Untitled").strip() or "Untitled"
     content = (data.get("content") or "").strip()
     course_id = data.get("course_id")
-    topic_id = data.get("topic_id")
+    topics = data.get("topics")
+    # Normalize topics to list[str]
+    if isinstance(topics, list):
+        try:
+            topics = [str(t).strip() for t in topics if str(t).strip()]
+        except Exception:
+            topics = []
+    else:
+        topics = []
     if not content:
         return jsonify(error="content is required"), 400
     conn = get_connection()
@@ -372,11 +787,11 @@ def create_note():
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO notes (title, course_id, topic_id, user_id, content)
+            INSERT INTO notes (title, course_id, topics, user_id, content)
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id, updated_at
             """,
-            (title, course_id, topic_id, user_id, content),
+            (title, course_id, topics, user_id, content),
         )
         nid, updated_at = cur.fetchone()
         conn.commit()
@@ -401,6 +816,8 @@ def dashboard_quizzes():
         return jsonify(error="Database connection error"), 500
     try:
         cur = conn.cursor()
+        # Ensure optional title column exists so we can surface custom names
+        cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS title TEXT;")
         cur.execute(
             """
             SELECT
@@ -408,7 +825,8 @@ def dashboard_quizzes():
               q.created_at,
               COALESCE(q.score, 0) AS score,
               COUNT(qq.id) AS question_count,
-              SUM(CASE WHEN COALESCE(NULLIF(qq.user_answer, ''), NULL) IS NOT NULL THEN 1 ELSE 0 END) AS answered_count
+              SUM(CASE WHEN COALESCE(NULLIF(qq.user_answer, ''), NULL) IS NOT NULL THEN 1 ELSE 0 END) AS answered_count,
+              q.title
             FROM quizzes q
             LEFT JOIN quiz_questions qq ON qq.quiz_id = q.id
             WHERE q.created_by = %s
@@ -427,6 +845,7 @@ def dashboard_quizzes():
             score = r[2]
             question_count = r[3] or 0
             answered_count = r[4] or 0
+            title = r[5]
             completed = (question_count > 0 and answered_count >= question_count)
             items.append({
                 "id": qid,
@@ -434,6 +853,7 @@ def dashboard_quizzes():
                 "score": score,
                 "question_count": question_count,
                 "answered_count": answered_count,
+                "title": title,
                 "completed": completed,
             })
         return jsonify(items=items), 200
@@ -747,7 +1167,12 @@ def extract_pdf_text(file_bytes: bytes) -> str:
     score_vision = ocr_quality_score(vision_text)
     prefer_vision = (conf >= 0.55) or (score_vision >= score_struct + 0.05)
     chosen = vision_text if prefer_vision else structured_text
-    return chosen
+    # If OCR (Vision) is preferred, run LLM cleanup via Gemini Flash Lite, then lightly normalize.
+    if prefer_vision and chosen:
+        cleaned = clean_ocr_with_gemini(chosen)
+        return format_readable_text(cleaned)
+    # Otherwise, just normalize lightly
+    return format_readable_text(chosen)
 
 def estimate_tokens(s: str) -> int:
     return max(1, int(len(s) / 4))
@@ -796,6 +1221,109 @@ def sanitize_summary(s: str) -> str:
             continue
         keep.append(ln)
     return "\n".join(keep).strip()
+
+def _mask_math_segments(s: str) -> tuple[str, list[str]]:
+    """Mask LaTeX math ($...$, $$...$$) to avoid accidental normalization within math.
+    Returns (masked_text, originals) where occurrences are replaced by placeholders like __MATH0__, ...
+    """
+    if not s:
+        return s, []
+    # First handle block math $$...$$ greedily minimal
+    patterns = [r"\$\$[\s\S]*?\$\$", r"\$[^$\n][\s\S]*?\$"]
+    originals: list[str] = []
+    out = s
+    for pat in patterns:
+        def repl(m):
+            originals.append(m.group(0))
+            return f"__MATH{len(originals)-1}__"
+        out = re.sub(pat, repl, out)
+    return out, originals
+
+def _unmask_math_segments(s: str, originals: list[str]) -> str:
+    if not originals:
+        return s
+    out = s
+    for i, orig in enumerate(originals):
+        out = out.replace(f"__MATH{i}__", orig)
+    return out
+
+def format_readable_text(s: str) -> str:
+    """Normalize OCR output for readability.
+    - Normalize unicode to NFKC
+    - Convert fancy bullets/dashes to "- "
+    - Remove table/artifact pipes and collapse whitespace
+    - Collapse excessive blank lines
+    - Drop common watermark lines (e.g., Goodnotes)
+    """
+    if not s:
+        return s
+    try:
+        # Mask math first so we don't alter LaTeX content
+        masked, originals = _mask_math_segments(s)
+        t = unicodedata.normalize("NFKC", masked)
+        # Remove common watermarks/footers
+        t = re.sub(r"^\s*made with\s+goodnotes\s*$", "", t, flags=re.IGNORECASE | re.MULTILINE)
+        # Replace table pipes with spaces/newlines
+        t = t.replace("||", "\n").replace("|", " ")
+        lines: list[str] = []
+        for ln in t.splitlines():
+            raw = ln.strip()
+            if not raw:
+                lines.append("")
+                continue
+            # Normalize bullets/dashes at start
+            raw = re.sub(r"^[\-\u2022\u00B7\u2219\u25E6\u25CF\u2013\u2014]+\s*", "- ", raw)
+            # Convert mid-dots to separators if present
+            raw = raw.replace("·", "- ")
+            # Collapse internal whitespace
+            raw = re.sub(r"\s+", " ", raw)
+            lines.append(raw)
+        t = "\n".join(lines)
+        # Collapse 3+ blank lines to max 1 blank line
+        t = re.sub(r"\n{3,}", "\n\n", t)
+        # Unmask math
+        t = _unmask_math_segments(t, originals)
+        return t.strip()
+    except Exception:
+        return s
+
+def clean_ocr_with_gemini(text: str) -> str:
+    """Use Gemini Flash Lite to clean OCR artifacts and format into readable, structured notes.
+    - Fix broken words/lines, remove artifacts (pipes, stray symbols), normalize bullets and headings.
+    - Keep the user's content faithful; do not invent facts.
+    """
+    t = (text or "").strip()
+    if not t:
+        return t
+    # Pre-trim to a safe size for prompt
+    snippet = t if len(t) <= 30000 else t[:30000]
+    system_msg = (
+        "You are a text cleanup assistant. Clean OCR text: fix broken line wraps and hyphenations, "
+        "remove stray characters like '|' and duplicated bullets, merge split words, normalize bullets to '- ', "
+        "preserve headings and section structure, and output clean, readable study notes. "
+        "Preserve LaTeX math expressions (like $...$, $$...$$, \\frac, \\binom) exactly as-is without alteration. "
+        "Do not add commentary or extra sections; do not hallucinate new content."
+    )
+    prompt = (
+        "CLEAN AND FORMAT THIS OCR TEXT INTO READABLE NOTES.\n"
+        "- Keep all original information.\n"
+        "- Use section headers if present.\n"
+        "- Normalize bullets to '- '.\n"
+        "- Remove watermark lines like 'Made with Goodnotes'.\n"
+        "- Remove table pipes and merge wrapped lines properly.\n\n"
+        f"OCR TEXT:\n{snippet}"
+    )
+    try:
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=system_msg + "\n\n" + prompt,
+        )
+        out = (getattr(resp, "text", None) or "").strip()
+        print("Was not cleaned properly" if out==t else "Was cleaned properly", flush=True)
+        return out or t
+    except Exception as e:
+        print(f"Failed to clean OCR text: {e}", flush=True)
+        return t
 
 def summarize_once(content: str, system_msg: str = "You are a helpful assistant that writes succinct study notes.", model: str = "gemini-2.5-pro") -> str:
     prompt = (
@@ -1052,13 +1580,44 @@ def generate_quiz_endpoint():
     size: str = (data.get("size") or "small").strip().lower()
     if not summary:
         return jsonify(error="Missing summary"), 400
-    size_map = {
-        "small": 8,
-        "medium": 12,
-        "large": 25,
-        "comprehensive": 50,
-    }
-    count = size_map.get(size, 8)
+        
+    # Dynamic question-count heuristic based on text length (tokens)
+    # Comprehensive is fixed at 50. Others scale within ranges by size.
+    clamp = lambda v, lo, hi: (lo if v < lo else (hi if v > hi else v))
+
+    tokens = estimate_tokens(summary)
+    if size == "comprehensive":
+        count = 50
+    else:
+        # Ranges chosen so that barely-sufficient inputs are bottom end
+        # and longer texts push toward the top end.
+        ranges = {
+            # small varies 5..10
+            "small": {
+                "min_tokens": 200,  # from ensure_minimum_summary
+                "max_tokens": 1200,
+                "low": 5,
+                "high": 10,
+            },
+            # medium varies 12..18
+            "medium": {
+                "min_tokens": 600,
+                "max_tokens": 3000,
+                "low": 12,
+                "high": 18,
+            },
+            # large varies 25..35
+            "large": {
+                "min_tokens": 3000,
+                "max_tokens": 12000,
+                "low": 25,
+                "high": 35,
+            },
+        }
+        rg = ranges.get(size, ranges["small"])
+        span = max(1, rg["max_tokens"] - rg["min_tokens"])  # avoid div by zero
+        ratio = clamp((tokens - rg["min_tokens"]) / span, 0.0, 1.0)
+        count = int(round(rg["low"] + ratio * (rg["high"] - rg["low"])) )
     ok, msg = ensure_minimum_summary(summary, size)
     if not ok:
         return jsonify(error=msg), 400
@@ -1118,7 +1677,7 @@ def generate_quiz_endpoint():
             inserted_question_ids.append(qid)
         conn.commit()
         cur.close()
-        return jsonify(quiz_id=quiz_id, questions=questions[:count], question_ids=inserted_question_ids), 200
+        return jsonify(quiz_id=quiz_id, questions=questions[:count], question_ids=inserted_question_ids[:count]), 200
     except Exception as e:
         conn.rollback()
         return jsonify(error=str(e)), 500

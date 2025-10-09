@@ -1,9 +1,9 @@
 """
 Initialize the Postgres database `learnnova` and create core tables.
-- Reads password from env: POSTGRES_PASSWORD
+- Reads password from env: POSTGRES_PASSWORD (and HOST/PORT/USER/DB if provided)
 - Connects to maintenance DB `postgres` to create `learnnova` if missing
 - Drops ALL tables in the `public` schema, then recreates:
-  users, courses, topics, quizzes, quiz_questions, notes
+  users, courses, topics, quizzes, quiz_questions, notes, summaries, study_guides
 
 Run:
   py learnnova-db/init_postgres.py
@@ -146,6 +146,7 @@ def create_tables():
             """
             CREATE TABLE IF NOT EXISTS quizzes (
                 id SERIAL PRIMARY KEY,
+                title TEXT,
                 topics TEXT[] DEFAULT '{}',
                 created_by INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -191,8 +192,34 @@ def create_tables():
             """
         )
 
+        # SUMMARIES (used by dashboard and summary endpoints)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS summaries (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+            """
+        )
+
+        # STUDY GUIDES (separate from notes)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS study_guides (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+            """
+        )
+
         conn.commit()
-        print("Postgres database initialized successfully.")
+        print("Postgres database initialized successfully. Tables: users, courses, topics, quizzes, quiz_questions, notes, summaries, study_guides")
     except Exception as e:
         conn.rollback()
         print("Initialization failed:", e)

@@ -44,7 +44,16 @@ const App = () => (
                 </SessionProtectedRoute>
               }
             />
-            <Route path="/summary" element={<Summary />} />
+            <Route
+              path="/summary"
+              element={
+                <SessionProtectedRoute>
+                  <ProtectedLayout>
+                    <Summary />
+                  </ProtectedLayout>
+                </SessionProtectedRoute>
+              }
+            />
             <Route
               path="/quiz"
               element={

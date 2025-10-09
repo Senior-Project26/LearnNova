@@ -1,5 +1,6 @@
 import { useLocation, Link, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
+import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 
 export default function Summary() {
   const location = useLocation() as { state?: { summary?: string; result?: any; extracted_text?: string } };
@@ -151,9 +152,13 @@ export default function Summary() {
             </button>
           </div>
           {showExtracted ? (
-            <pre className="whitespace-pre bg-gray-50 p-4 rounded border overflow-x-auto">{extractedText || "(no extracted text)"}</pre>
+            <div className="bg-gray-50 p-4 rounded border overflow-x-auto">
+              <MarkdownMathRenderer text={extractedText || "(no extracted text)"} />
+            </div>
           ) : (
-            <pre className="whitespace-pre-wrap bg-gray-50 p-4 rounded border">{summary}</pre>
+            <div className="bg-gray-50 p-4 rounded border">
+              <MarkdownMathRenderer text={summary || ""} />
+            </div>
           )}
           {result && (
             <details className="mt-4">

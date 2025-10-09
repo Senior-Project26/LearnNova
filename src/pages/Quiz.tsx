@@ -14,13 +14,99 @@ type QuizResponse = {
   questions: QuizQuestion[];
 };
 
+// Simple checkbox combobox for multi-select
+type ComboOption = { id: number; title: string };
+function MultiCombo({
+  label,
+  options,
+  selectedIds,
+  setSelectedIds,
+}: {
+  label: string;
+  options: ComboOption[];
+  selectedIds: number[];
+  setSelectedIds: (ids: number[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(
+    () => options.filter(o => (o.title || "").toLowerCase().includes(query.toLowerCase())),
+    [options, query]
+  );
+  const toggle = (id: number) => {
+    setSelectedIds(
+      selectedIds.includes(id)
+        ? selectedIds.filter(x => x !== id)
+        : [...selectedIds, id]
+    );
+  };
+  const clearAll = () => setSelectedIds([]);
+  const count = selectedIds.length;
+  return (
+    <div className="block relative">
+      <span className="font-medium">{label}</span>
+      <button
+        type="button"
+        className="mt-2 w-full p-2 border rounded flex items-center justify-between"
+        onClick={() => setOpen(o => !o)}
+      >
+        <span>{count > 0 ? `${count} selected` : `Select ${label.toLowerCase()}`}</span>
+        <span className="text-gray-500">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 w-full bg-white border rounded shadow-lg p-2">
+          <div className="flex items-center gap-2 mb-2">
+            <input
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search..."
+              className="w-full px-2 py-1 border rounded"
+            />
+            <button
+              className="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200"
+              onClick={clearAll}
+              type="button"
+            >
+              Clear
+            </button>
+          </div>
+          <ul className="max-h-56 overflow-auto space-y-1">
+            {filtered.map(opt => (
+              <li key={opt.id}>
+                <label className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(opt.id)}
+                    onChange={() => toggle(opt.id)}
+                  />
+                  <span className="text-sm truncate">{opt.title || `#${opt.id}`}</span>
+                </label>
+              </li>
+            ))}
+            {filtered.length === 0 && (
+              <li className="text-xs text-gray-500 px-2 py-1">No matches</li>
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Quiz() {
   // Form state
-  const [summary, setSummary] = useState("");
   const [size, setSize] = useState<QuizSize>("small");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const location = useLocation() as { state?: { summary?: string; quizId?: number } };
+  // Multi-select data
+  const [allNotes, setAllNotes] = useState<Array<{ id: number; title: string }>>([]);
+  const [allSummaries, setAllSummaries] = useState<Array<{ id: number; title: string }>>([]);
+  const [selectedNoteIds, setSelectedNoteIds] = useState<number[]>([]);
+  const [selectedSummaryIds, setSelectedSummaryIds] = useState<number[]>([]);
+  const [stateSummaryContent, setStateSummaryContent] = useState<string>("");
+
 
   // Quiz runtime state
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
@@ -30,10 +116,31 @@ export default function Quiz() {
   const [score, setScore] = useState(0);
   const [quizId, setQuizId] = useState<number | null>(null);
   const [questionIds, setQuestionIds] = useState<number[]>([]);
+  // Derived
+  const current = questions ? questions[idx] : null;
+  const total = questions ? questions.length : 0;
 
-  // Prefill from quizId (resume) or from navigation summary / sessionStorage
+  // Prefill from quizId (resume) or from navigation summary / sessionStorage, and load lists
   useEffect(() => {
     try {
+      // Load lists
+      (async () => {
+        try {
+          const [nRes, sRes] = await Promise.all([
+            fetch("/api/all_notes", { credentials: "include" }),
+            fetch("/api/all_summaries", { credentials: "include" }),
+          ]);
+          if (nRes.ok) {
+            const n = await nRes.json();
+            setAllNotes(((n?.items as any[]) || []).map(x => ({ id: x.id, title: x.title })));
+          }
+          if (sRes.ok) {
+            const s = await sRes.json();
+            setAllSummaries(((s?.items as any[]) || []).map(x => ({ id: x.id, title: x.title })));
+          }
+        } catch {}
+      })();
+
       const qid = location.state?.quizId;
       if (typeof qid === "number") {
         // Load existing quiz for resume
@@ -69,25 +176,20 @@ export default function Quiz() {
         })();
         return;
       }
-      // 1) location.state from Summary page navigation
+      // If a summary was passed via navigation, add a virtual selectable option and auto-select it
       const stateSummary = location.state?.summary;
       if (typeof stateSummary === "string" && stateSummary.trim()) {
-        setSummary(stateSummary);
-        return;
-      }
-      // 2) sessionStorage fallback set by Summary.quizMe()
-      const last = sessionStorage.getItem("lastUploadResult");
-      if (last) {
-        const parsed = JSON.parse(last);
-        if (parsed?.summary && typeof parsed.summary === "string") setSummary(parsed.summary);
+        setStateSummaryContent(stateSummary);
+        setSelectedSummaryIds((ids) => (ids.includes(-1) ? ids : [-1, ...ids])); // -1 denotes virtual "Provided Summary"
       }
     } catch {}
   }, []);
 
-  // Helper: Large/comprehensive require longer summary (UX hint only; backend enforces real thresholds)
-  const needsLonger = size === "large" || size === "comprehensive";
-
-  const disableSubmit = useMemo(() => summary.trim().length < (needsLonger ? 600 : 60), [summary, needsLonger]);
+  const disableSubmit = useMemo(() => {
+    const selectedCount = selectedNoteIds.length + selectedSummaryIds.length;
+    if (selectedCount <= 0) return true;
+    return false;
+  }, [selectedNoteIds, selectedSummaryIds]);
   // Request quiz from backend (Gemini 2.5 pro under the hood)
   const requestQuiz = async () => {
     setError(null);
@@ -99,11 +201,30 @@ export default function Quiz() {
     setScore(0);
 
     try {
-    const res = await fetch("/api/quiz", {
+      // Build combined summary from selected items if any
+      let combined = "";
+      if (selectedNoteIds.length > 0 || selectedSummaryIds.length > 0) {
+        const notePromises = selectedNoteIds.map(async (id) => {
+          const r = await fetch(`/api/notes/${id}`, { credentials: "include" });
+          const j = await r.json().catch(() => ({} as any));
+          return (j?.title ? `# Note: ${j.title}\n` : "") + (j?.content || "");
+        });
+        const realSummaryIds = selectedSummaryIds.filter((id) => id !== -1);
+        const includeProvided = selectedSummaryIds.includes(-1) ? [stateSummaryContent] : [];
+        const summaryPromises = realSummaryIds.map(async (id) => {
+          const r = await fetch(`/api/summaries/${id}`, { credentials: "include" });
+          const j = await r.json().catch(() => ({} as any));
+          return (j?.title ? `# Summary: ${j.title}\n` : "") + (j?.content || "");
+        });
+        const parts = await Promise.all([...notePromises, ...summaryPromises]);
+        combined = [...includeProvided, ...parts].filter(Boolean).join("\n\n").trim();
+      }
+      const payloadSummary = combined.trim();
+      const res = await fetch("/api/quiz", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ summary, size }),
+      body: JSON.stringify({ summary: payloadSummary, size }),
     });
       const data: (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string } = await res.json().catch(() => ({} as any));
       if (!res.ok) {
@@ -121,9 +242,6 @@ export default function Quiz() {
     }
   };
 
-  // Current question
-  const current = questions ? questions[idx] : null;
-  const total = questions?.length || 0;
 
   const onSubmitAnswer = async () => {
     if (selected == null || !current) return;
@@ -204,36 +322,39 @@ export default function Quiz() {
     <div className="container mx-auto max-w-3xl p-6 space-y-6">
       <h1 className="text-2xl font-semibold">Quiz Generator</h1>
 
-      {/* Form */}
+      {/* Form (multi-select sources) */}
       {!questions && (
         <div className="space-y-4">
-          <label className="block">
-            <span className="font-medium">Paste or enter a summary</span>
-            <textarea
-              className="mt-2 w-full min-h-40 p-3 border rounded"
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              placeholder="Paste your summary here..."
+          <div className="grid md:grid-cols-2 gap-4">
+            <MultiCombo
+              label="Notes"
+              options={allNotes}
+              selectedIds={selectedNoteIds}
+              setSelectedIds={setSelectedNoteIds}
             />
-          </label>
+            <MultiCombo
+              label="Summaries"
+              options={[
+                ...(stateSummaryContent ? [{ id: -1, title: "Provided Summary (from navigation)" }] : []),
+                ...allSummaries,
+              ]}
+              selectedIds={selectedSummaryIds}
+              setSelectedIds={setSelectedSummaryIds}
+            />
+          </div>
 
           <label className="block">
             <span className="font-medium">Quiz size</span>
             <select
-              className="mt-2 w-full p-2 border rounded"
+              className="mt-2 p-2 border rounded"
               value={size}
               onChange={(e) => setSize(e.target.value as QuizSize)}
             >
-              <option value="small">Small (5–10)</option>
-              <option value="medium">Medium (10–15)</option>
-              <option value="large">Large (20–30)</option>
-              <option value="comprehensive">Comprehensive (50)</option>
+              <option value="small">Small</option>
+              <option value="medium">Medium</option>
+              <option value="large">Large</option>
+              <option value="comprehensive">Comprehensive</option>
             </select>
-            {needsLonger && (
-              <p className="mt-2 text-sm text-gray-600">
-                Large and Comprehensive require longer summaries for high-quality quizzes.
-              </p>
-            )}
           </label>
 
           <button
@@ -243,7 +364,6 @@ export default function Quiz() {
           >
             {loading ? "Generating..." : "Generate Quiz"}
           </button>
-
           {error && <p className="text-red-600">{error}</p>}
         </div>
       )}
