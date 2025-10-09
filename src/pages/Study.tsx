@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +18,7 @@ import {
 
 const Study = () => {
   // ---- STATE ----
+  const navigate = useNavigate();
   const [studySets, setStudySets] = useState([
     {
       id: 1,
@@ -186,14 +188,19 @@ const Study = () => {
                 {[
                   { icon: <PenTool className="h-4 w-4 mr-2" />, label: "Create New Flashcards" },
                   { icon: <Sparkles className="h-4 w-4 mr-2" />, label: "Generate Flashcards (AI)" },
-                  { icon: <Brain className="h-4 w-4 mr-2" />, label: "Generate Quiz (AI)" },
-                  { icon: <FileUp className="h-4 w-4 mr-2" />, label: "Upload PDF Notes" },
-                  { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Make Custom Quiz" },
+                  { icon: <Brain className="h-4 w-4 mr-2" />, label: "Generate Quiz", navigateTo: "/quiz" },
+                  { icon: <FileUp className="h-4 w-4 mr-2" />, label: "Upload Notes or Book excerpts", navigateTo: "/upload" },
+                  { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Create Study Guide", navigateTo: "/study-guide" },
                 ].map((action, index) => (
                   <Button
                     key={index}
                     variant="ghost"
                     className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
+                    onClick={() => {
+                      if ((action as any).navigateTo) {
+                        navigate((action as any).navigateTo);
+                      }
+                    }}
                   >
                     {action.icon}
                     {action.label}

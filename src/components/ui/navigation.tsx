@@ -1,14 +1,32 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Menu, X, BookOpen, User, Settings } from "lucide-react";
 import logo from "@/assets/learnova-logo.png";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 
 export const Navigation = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const { user, signOutUser } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
+
+  // Track Flask session (backend) login state
+  const [backendLoggedIn, setBackendLoggedIn] = useState<boolean | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/session", { credentials: "include" });
+        if (!mounted) return;
+        setBackendLoggedIn(res.ok);
+      } catch {
+        if (!mounted) return;
+        setBackendLoggedIn(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [location.pathname]);
 
   // Helper to highlight active link
   const isActive = (path: string) => location.pathname === path;
@@ -56,9 +74,20 @@ export const Navigation = () => {
 
           {/* Auth Buttons */}
           <div className="hidden md:flex items-center space-x-3">
-            {user ? (
+            {backendLoggedIn === true ? (
               <Button
-                onClick={signOutUser}
+                onClick={async () => {
+                  try {
+                    await fetch("/api/logout", {
+                      method: "POST",
+                      credentials: "include",
+                    });
+                  } catch {}
+                  try {
+                    await signOutUser();
+                  } catch {}
+                  navigate("/signin", { replace: true });
+                }}
                 className="bg-[#4C1D3D] hover:bg-[#852E4E] text-[#FFBB94] border border-pink-700/40 font-semibold shadow-md shadow-pink-900/30 transition-all"
               >
                 Sign Out
@@ -113,9 +142,20 @@ export const Navigation = () => {
             ))}
 
             <div className="pt-2 space-y-2">
-              {user ? (
+              {backendLoggedIn ? (
                 <Button
-                  onClick={signOutUser}
+                  onClick={async () => {
+                    try {
+                      await fetch("/api/logout", {
+                        method: "POST",
+                        credentials: "include",
+                      });
+                    } catch {}
+                    try {
+                      await signOutUser();
+                    } catch {}
+                    navigate("/signin", { replace: true });
+                  }}
                   className="w-full bg-[#4C1D3D] hover:bg-[#852E4E] text-[#FFBB94] border border-pink-700/40"
                 >
                   Sign Out
