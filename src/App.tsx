@@ -3,20 +3,22 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import CosmicBackdrop from "@/components/cosmic/CosmicBackdrop";
+
 import Index from "./pages/Index";
-import NotFound from "./pages/NotFound";
 import Study from "./pages/Study";
 import Dashboard from "./pages/Dashboard";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import SignIn from "./pages/SignIn";
-
+import Upload from "./pages/Upload";
+import Summary from "./pages/Summary";
+import NotFound from "./pages/NotFound";
+import Quiz from "./pages/Quiz";
+import StudyGuide from "./pages/StudyGuide";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import ProtectedLayout from "@/components/ProtectedLayout";
-import Upload from "./pages/Upload";
-import Summary from "./pages/Summary";
-import Quiz from "./pages/Quiz";
 
 const queryClient = new QueryClient();
 
@@ -27,6 +29,7 @@ const App = () => (
       <Sonner />
       <AuthProvider>
         <Router>
+          <CosmicBackdrop />
           <Routes>
             {/* Public routes */}
             <Route path="/" element={<Index />} />
@@ -34,6 +37,7 @@ const App = () => (
             <Route path="/upload" element={<Upload />} />
             <Route path="/summary" element={<Summary />} />
             <Route path="/quiz" element={<Quiz />} />
+            <Route path="/study-guide" element={<StudyGuide />} />
 
             {/* Protected routes (with Navigation bar) */}
             <Route

@@ -18,6 +18,17 @@ export default function Summary() {
     navigate("/quiz");
   };
 
+  const studyGuide = () => {
+    if (!summary) return;
+    try {
+      sessionStorage.setItem(
+        "lastUploadResult",
+        JSON.stringify({ summary })
+      );
+    } catch {}
+    navigate("/study-guide");
+  };
+
   return (
     <div className="container mx-auto max-w-3xl p-6">
       <h1 className="text-2xl font-semibold mb-4">Summary</h1>
@@ -39,7 +50,7 @@ export default function Summary() {
             <button onClick={quizMe} className="px-4 py-2 bg-green-600 text-white rounded">
               Quiz Me!
             </button>
-            <button className="px-4 py-2 bg-gray-300 text-gray-800 rounded" title="Coming soon" disabled>
+            <button onClick={studyGuide} className="px-4 py-2 bg-purple-600 text-white rounded">
               Study Guide
             </button>
           </div>

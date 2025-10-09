@@ -74,4 +74,6 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints
-"firebase-service-account.json" 
+learnnova.db
+firebase-service-account.json
+google-credentials.json

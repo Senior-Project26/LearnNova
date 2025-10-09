@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 interface Star {
   id: number;
@@ -8,8 +8,20 @@ interface Star {
   size: number;
 }
 
-export const StarField = ({ count = 50 }: { count?: number }) => {
+type Props = {
+  count?: number;
+  depth?: number; // parallax intensity multiplier (e.g., 0.02 small, 0.06 larger)
+  mouse?: { x: number; y: number } | null; // normalized -1..1
+};
+
+export const StarField = ({ count = 50, depth = 0.03, mouse = null }: Props) => {
   const [stars, setStars] = useState<Star[]>([]);
+  const translate = useMemo(() => {
+    if (!mouse) return "translate3d(0,0,0)";
+    const tx = (mouse.x || 0) * depth * 20; // convert to px-ish
+    const ty = (mouse.y || 0) * depth * 20;
+    return `translate3d(${tx}px, ${ty}px, 0)`;
+  }, [mouse, depth]);
 
   useEffect(() => {
     const generateStars = () => {
@@ -30,11 +42,14 @@ export const StarField = ({ count = 50 }: { count?: number }) => {
   }, [count]);
 
   return (
-    <div className="starfield">
+    <div
+      className="starfield absolute inset-0 pointer-events-none"
+      style={{ transform: translate, transition: "transform 80ms linear" }}
+    >
       {stars.map((star) => (
         <div
           key={star.id}
-          className="absolute text-highlight opacity-30"
+          className="absolute text-pink-200/70 animate-pulse"
           style={{
             left: `${star.x}%`,
             top: `${star.y}%`,

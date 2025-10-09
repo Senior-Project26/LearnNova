@@ -19,7 +19,7 @@ export default function Upload() {
       const form = new FormData();
       form.append("file", file);
 
-      const res = await fetch("http://127.0.0.1:5000/api/upload", {
+      const res = await fetch("http://127.0.0.1:5050/api/upload", {
         method: "POST",
         body: form,
       });
