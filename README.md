@@ -1,6 +1,6 @@
 # LearnNova
 
-An AI-powered study companion that helps students learn faster with automated note summarization, quiz generation, study guides, and more. Text extraction is powered by Google Cloud Vision, and content generation is powered by Gemini 2.5 Pro.
+An AI-powered study companion that helps students learn faster with automated note summarization, quiz generation, study guides, and more. Text extraction is powered by Google Cloud Vision, and content generation is powered by Gemini 2.5.
 
 LearnNova was created as a student project for CSC 4899 at Florida Southern College.
 
