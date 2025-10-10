@@ -458,7 +458,7 @@ def extract_pdf_text(file_bytes: bytes) -> str:
 # UTILITY FUNCTIONS - SUMMARY GENERATION
 # ============================================================================
 
-def summarize_once(content: str, system_msg: str = "You are a helpful assistant that writes succinct study notes.", model: str = "gemini-2.5-pro") -> str:
+def summarize_once(content: str, system_msg: str = "You are a helpful assistant that writes succinct study notes.", model: str = "gemini-2.5-flash-lite") -> str:
     """Generate a single summary using Gemini."""
     prompt = (
         "Summarize the following content into clear, concise bullet points. "
@@ -505,19 +505,19 @@ def summarize_text(text: str) -> str:
             partial_summaries: list[str] = []
             for ch in chunks:
                 try:
-                    partial = summarize_once(ch, model="gemini-2.5-pro")
+                    partial = summarize_once(ch, model="gemini-2.5-flash-lite")
                 except Exception:
                     raise RuntimeError("file too large to be summarized.")
                 partial_summaries.append(partial)
                 time.sleep(1)
             combined = "\n\n".join(partial_summaries)
             try:
-                return summarize_once(combined, system_msg="You write concise combined summaries of bullet-point notes.", model="gemini-2.5-pro")
+                return summarize_once(combined, system_msg="You write concise combined summaries of bullet-point notes.", model="gemini-2.5-flash-lite")
             except Exception:
                 raise RuntimeError("file too large to be summarized.")
         else:
             try:
-                return summarize_once(txt, model="gemini-2.5-pro")
+                return summarize_once(txt, model="gemini-2.5-flash-lite")
             except Exception:
                 raise RuntimeError("file too large to be summarized.")
     except Exception:
@@ -587,7 +587,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         f"{schema_example}\n\nSUMMARY:\n{summary}"
     )
     resp = gemini_client.models.generate_content(
-        model="gemini-2.5-pro",
+        model="gemini-2.5-flash-lite",
         contents=user_prompt,
     )
     raw = (getattr(resp, "text", None) or "").strip()
@@ -650,7 +650,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         )
         try:
             retry_resp = gemini_client.models.generate_content(
-                model="gemini-2.5-pro",
+                model="gemini-2.5-flash-lite",
                 contents=retry_prompt,
             )
             retry_raw = (getattr(retry_resp, "text", None) or "").strip()
@@ -717,7 +717,7 @@ def generate_study_guide(text: str) -> str:
     )
     try:
         resp = gemini_client.models.generate_content(
-            model="gemini-2.5-pro",
+            model="gemini-2.5-flash-lite",
             contents=prompt,
         )
         out = (getattr(resp, "text", None) or "").strip()
