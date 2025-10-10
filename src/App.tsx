@@ -11,7 +11,7 @@ import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import SignIn from "./pages/SignIn";
 import SignUp from "./pages/SignUp";
-import { AuthProvider } from "@/contexts/AuthContext";;
+import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedLayout from "@/components/ProtectedLayout";
 import SessionProtectedRoute from "@/components/SessionProtectedRoute";
 import Upload from "./pages/Upload";
