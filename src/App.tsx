@@ -1,11 +1,9 @@
-import React from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import CosmicBackdrop from "@/components/cosmic/CosmicBackdrop";
-
 import Index from "./pages/Index";
 import Study from "./pages/Study";
 import Dashboard from "./pages/Dashboard";
@@ -13,8 +11,7 @@ import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import SignIn from "./pages/SignIn";
 import SignUp from "./pages/SignUp";
-import { AuthProvider } from "@/contexts/AuthContext";
-import ProtectedRoute from "@/components/ProtectedRoute";
+import { AuthProvider } from "@/contexts/AuthContext";;
 import ProtectedLayout from "@/components/ProtectedLayout";
 import SessionProtectedRoute from "@/components/SessionProtectedRoute";
 import Upload from "./pages/Upload";
