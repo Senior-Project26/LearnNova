@@ -516,13 +516,13 @@ export default Dashboard;
 
 // RecentStudyGuides subcomponent
 function RecentStudyGuides() {
-  const [items, setItems] = useState<Array<{ id: number; title: string }>>([]);
+  const [items, setItems] = useState<Array<{ id: number; type: 'study_set'|'study_guide'; title?: string; name?: string; created_at?: string }>>([]);
   const navigate = useNavigate();
 
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/dashboard/study_guides', { credentials: 'include' });
+        const res = await fetch('/api/dashboard_recent_sets', { credentials: 'include' });
         const j = await res.json().catch(() => ({} as any));
         if (res.ok && Array.isArray(j.items)) setItems(j.items);
       } catch {}
@@ -533,41 +533,41 @@ function RecentStudyGuides() {
     navigate('/study-guide', { state: { studyGuideId: id } });
   };
 
+  const openSet = (id: number) => {
+    navigate(`/study-set/${id}`);
+  };
+
   return (
     <div>
       {items.length === 0 ? (
-        <p className="text-muted-foreground">Your study guides will appear here.</p>
+        <p className="text-muted-foreground">Your recent study sets and guides will appear here.</p>
       ) : (
         <ul className="divide-y">
-          {items.map(it => (
-            <li key={it.id} className="py-2 flex items-center gap-2">
-              <button className="flex-1 text-left hover:underline" onClick={() => openGuide(it.id)}>
-                {it.title || `Study Guide #${it.id}`}
-              </button>
-              <button
-                className="px-2 py-1 text-xs rounded border hover:bg-gray-50"
-                onClick={() => openGuide(it.id)}
-              >
-                View / Rename
-              </button>
-              <button
-                className="px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200"
-                onClick={async () => {
-                  if (!confirm('Delete this study guide?')) return;
-                  try {
-                    const res = await fetch(`/api/study_guides/${it.id}`, { method: 'DELETE', credentials: 'include' });
-                    if (res.status === 204) setItems(prev => prev.filter(x => x.id !== it.id));
-                  } catch {}
-                }}
-              >
-                Delete
-              </button>
-            </li>
-          ))}
+          {items.map(it => {
+            const when = it.created_at ? new Date(it.created_at).toLocaleString() : '';
+            const isSet = it.type === 'study_set';
+            const label = isSet ? (it.name || `Set #${it.id}`) : (it.title || `Guide #${it.id}`);
+            const onOpen = () => (isSet ? openSet(it.id) : openGuide(it.id));
+            return (
+              <li key={`${it.type}-${it.id}`} className="py-2 flex items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <button className="flex-1 text-left hover:underline truncate" onClick={onOpen}>
+                    {label}
+                  </button>
+                  {when && <div className="text-xs text-muted-foreground">{when}</div>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs px-2 py-1 rounded border text-muted-foreground">
+                    {isSet ? 'Flashcards' : 'Study Guide'}
+                  </span>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
 
-      {/* Viewing happens on the Study Guide page now */}
+      {/* Viewing happens on the respective pages now */}
     </div>
   );
 }
