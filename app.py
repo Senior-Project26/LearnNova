@@ -14,7 +14,6 @@ import unicodedata
 from flask import Flask, request, jsonify, session
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 # Third-Party: Environment & Configuration
