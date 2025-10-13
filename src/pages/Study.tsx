@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +45,27 @@ const Study = () => {
   ]);
   const [newSetName, setNewSetName] = useState("");
   const [selectedSet, setSelectedSet] = useState<number | null>(null);
+  const [recent, setRecent] = useState<Array<{ type: 'study_set' | 'study_guide' | 'note' | 'summary'; id: number; name?: string; title?: string; created_at?: string }>>([]);
+  const [recentError, setRecentError] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalTitle, setModalTitle] = useState<string>("");
+  const [modalBody, setModalBody] = useState<string>("");
+  const [modalLoading, setModalLoading] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/recent_sets', { credentials: 'include' });
+        const data = await res.json().catch(() => ({} as any));
+        if (!res.ok) throw new Error((data as any)?.error || `Failed to load recent (${res.status})`);
+        const items = Array.isArray((data as any)?.items) ? (data as any).items : [];
+        setRecent(items as any[]);
+      } catch (e: any) {
+        setRecent([]);
+        setRecentError(e?.message || 'Failed to load recent');
+      }
+    })();
+  }, []);
 
   // ---- HANDLERS ----
   const addSet = () => {
@@ -105,6 +128,87 @@ const Study = () => {
                   <span>{totalProgress}%</span>
                 </div>
                 <Progress value={totalProgress} className="bg-[#852E4E]" />
+              </CardContent>
+            </Card>
+
+            {/* Recent Sets */}
+            <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
+              <CardHeader>
+                <CardTitle>Recent</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {recentError && <div className="text-sm text-red-300">{recentError}</div>}
+                {recent.length === 0 && !recentError && (
+                  <div className="text-sm text-pink-200">No recent items.</div>
+                )}
+                {recent.map((it) => {
+                  const when = it.created_at ? new Date(it.created_at).toLocaleString() : '';
+                  let label = `#${it.id}`;
+                  let badge = '';
+                  let onOpen: (() => void) | null = null;
+                  if (it.type === 'study_set') {
+                    label = it.name || `Set #${it.id}`;
+                    badge = 'Flashcards';
+                    onOpen = () => navigate(`/study-set/${it.id}`);
+                  } else if (it.type === 'study_guide') {
+                    label = it.title || `Guide #${it.id}`;
+                    badge = 'Study Guide';
+                    onOpen = () => navigate('/study-guide', { state: { studyGuideId: it.id } });
+                  } else if (it.type === 'note') {
+                    label = it.title || `Note #${it.id}`;
+                    badge = 'Note';
+                    onOpen = async () => {
+                      try {
+                        setModalTitle(label);
+                        setModalBody("");
+                        setModalLoading(true);
+                        setModalOpen(true);
+                        const r = await fetch(`/api/notes/${it.id}`, { credentials: 'include' });
+                        const j = await r.json().catch(() => ({} as any));
+                        if (r.ok) {
+                          setModalTitle(j?.title || label);
+                          setModalBody(j?.content || "");
+                        } else {
+                          setModalBody((j as any)?.error || 'Failed to load note');
+                        }
+                      } finally {
+                        setModalLoading(false);
+                      }
+                    };
+                  } else if (it.type === 'summary') {
+                    label = it.title || `Summary #${it.id}`;
+                    badge = 'Summary';
+                    onOpen = async () => {
+                      try {
+                        setModalTitle(label);
+                        setModalBody("");
+                        setModalLoading(true);
+                        setModalOpen(true);
+                        const r = await fetch(`/api/summaries/${it.id}`, { credentials: 'include' });
+                        const j = await r.json().catch(() => ({} as any));
+                        if (r.ok) {
+                          setModalTitle(j?.title || label);
+                          setModalBody(j?.content || "");
+                        } else {
+                          setModalBody((j as any)?.error || 'Failed to load summary');
+                        }
+                      } finally {
+                        setModalLoading(false);
+                      }
+                    };
+                  }
+                  return (
+                    <div key={`${it.type}-${it.id}`} className="flex items-center justify-between p-2 rounded bg-[#852E4E]/30 border border-pink-700/30">
+                      <button type="button" onClick={onOpen ?? undefined} className="text-left">
+                        <div className="font-medium text-[#FFBB94] hover:underline">{label}</div>
+                        {when && <div className="text-xs text-pink-200">{when}</div>}
+                      </button>
+                      <div className="text-xs px-2 py-1 rounded border border-pink-600/50 text-pink-200">
+                        {badge}
+                      </div>
+                    </div>
+                  );
+                })}
               </CardContent>
             </Card>
 
@@ -186,8 +290,8 @@ const Study = () => {
               </CardHeader>
               <CardContent className="space-y-2">
                 {[
-                  { icon: <PenTool className="h-4 w-4 mr-2" />, label: "Create New Flashcards" },
-                  { icon: <Sparkles className="h-4 w-4 mr-2" />, label: "Generate Flashcards (AI)" },
+                  { icon: <PenTool className="h-4 w-4 mr-2" />, label: "Create New Flashcards", navigateTo: "/flashcards", state: { mode: "create" } },
+                  { icon: <Sparkles className="h-4 w-4 mr-2" />, label: "Generate Flashcards (AI)", navigateTo: "/flashcards", state: { mode: "generate" } },
                   { icon: <Brain className="h-4 w-4 mr-2" />, label: "Generate Quiz", navigateTo: "/quiz" },
                   { icon: <FileUp className="h-4 w-4 mr-2" />, label: "Upload Notes or Book excerpts", navigateTo: "/upload" },
                   { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Create Study Guide", navigateTo: "/study-guide" },
@@ -198,7 +302,7 @@ const Study = () => {
                     className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
                     onClick={() => {
                       if ((action as any).navigateTo) {
-                        navigate((action as any).navigateTo);
+                        navigate((action as any).navigateTo, { state: (action as any).state });
                       }
                     }}
                   >
@@ -222,9 +326,29 @@ const Study = () => {
             </Card>
           </div>
         </div>
+        {/* Modal mount */}
+        <RecentModal open={modalOpen} onOpenChange={setModalOpen} title={modalTitle} body={modalBody} loading={modalLoading} />
       </div>
     </div>
   );
 };
+
+// Modal viewer for Notes/Summaries
+function RecentModal({ open, onOpenChange, title, body, loading }: { open: boolean; onOpenChange: (v: boolean) => void; title: string; body: string; loading: boolean }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>{title || 'Item'}</DialogTitle>
+          <DialogDescription className="sr-only">Recent item content</DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[70vh] overflow-auto text-sm bg-white rounded p-3">
+          {loading ? 'Loading…' : <MarkdownMathRenderer text={body || 'No content'} />}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 
 export default Study;
