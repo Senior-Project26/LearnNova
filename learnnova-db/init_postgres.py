@@ -123,6 +123,7 @@ def create_tables():
                 name TEXT NOT NULL,
                 description TEXT,
                 created_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (created_by) REFERENCES users(id)
             );
             """
@@ -136,6 +137,7 @@ def create_tables():
                 course_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (course_id) REFERENCES courses(id)
             );
             """
@@ -185,6 +187,7 @@ def create_tables():
                 user_id INTEGER,
                 content TEXT NOT NULL,
                 shared BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (course_id) REFERENCES courses(id),
                 FOREIGN KEY (user_id) REFERENCES users(id)
@@ -200,6 +203,7 @@ def create_tables():
                 user_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
             """
@@ -213,13 +217,14 @@ def create_tables():
                 user_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
             """
         )
 
         conn.commit()
-        print("Postgres database initialized successfully. Tables: users, courses, topics, quizzes, quiz_questions, notes, summaries, study_guides")
+        print("Postgres database initialized successfully. Tables: users, courses, topics, quizzes, quiz_questions, notes, summaries, study_guides (with created_at)")
     except Exception as e:
         conn.rollback()
         print("Initialization failed:", e)

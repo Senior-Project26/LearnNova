@@ -16,13 +16,23 @@ declare global {
 
 function ensureKatexLoaded(): Promise<void> {
   return new Promise((resolve) => {
-    if (window.katex?.renderToString) return resolve();
+    const done = () => resolve();
+    const loadMhchem = () => {
+      const existingMh = document.querySelector<HTMLScriptElement>("script[data-katex-mhchem]");
+      if (existingMh) { existingMh.addEventListener("load", done); setTimeout(done, 50); return; }
+      const mh = document.createElement("script");
+      mh.src = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/mhchem.min.js";
+      mh.async = true;
+      mh.setAttribute("data-katex-mhchem", "true");
+      mh.onload = done;
+      mh.onerror = done;
+      document.body.appendChild(mh);
+    };
+
+    if (window.katex?.renderToString) { loadMhchem(); return; }
     const existing = document.querySelector<HTMLScriptElement>("script[data-katex]");
-    if (existing) {
-      existing.addEventListener("load", () => resolve());
-      setTimeout(() => resolve(), 50);
-      return;
-    }
+    if (existing) { existing.addEventListener("load", loadMhchem); setTimeout(loadMhchem, 50); return; }
+
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css";
@@ -32,8 +42,8 @@ function ensureKatexLoaded(): Promise<void> {
     script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js";
     script.async = true;
     script.setAttribute("data-katex", "true");
-    script.onload = () => resolve();
-    script.onerror = () => resolve();
+    script.onload = loadMhchem;
+    script.onerror = loadMhchem;
     document.body.appendChild(script);
   });
 }
@@ -166,17 +176,49 @@ export default function MarkdownMathRenderer({ text }: Props) {
     let html1 = mdToHtml(normalized);
     let html2 = sanitizeKeepSupSub(html1);
 
-    // Render math: $$...$$ blocks then $...$ inline on the HTML string
+    // Render math: $$...$$ blocks and $...$ inline, and also \[...\] (block) and \(...\) (inline)
     const renderBlock = /\$\$([\s\S]*?)\$\$/g;
     const renderInline = /\$([^\n$][^$]*?)\$/g;
+    const renderBlockBracket = /\\\[([\s\S]*?)\\\]/g; // \\[ ... \\]
+    const renderInlineParen = /\\\(([\s\S]*?)\\\)/g;  // \\( ... \\)
+
+    const sanitizeLatexExpr = (expr: string) => {
+      // Escape common special characters that are invalid unescaped in LaTeX text
+      // e.g. "#", "%", "&" frequently appear in natural language
+      // Avoid double-escaping by only escaping when not already escaped
+      return expr
+        .replace(/(?<!\\)#/g, "\\#")
+        .replace(/(?<!\\)%/g, "\\%")
+        .replace(/(?<!\\)&/g, "\\&");
+    };
 
     if (ready && window.katex?.renderToString) {
       html2 = html2.replace(renderBlock, (_m, expr) => {
-        try { return window.katex!.renderToString(String(expr).trim(), { displayMode: true, throwOnError: false, strict: "ignore" }); }
+        try {
+          const cleaned = sanitizeLatexExpr(String(expr).trim());
+          return window.katex!.renderToString(cleaned, { displayMode: true, throwOnError: false, strict: "ignore" });
+        }
+        catch { return esc(_m); }
+      });
+      html2 = html2.replace(renderBlockBracket, (_m, expr) => {
+        try {
+          const cleaned = sanitizeLatexExpr(String(expr).trim());
+          return window.katex!.renderToString(cleaned, { displayMode: true, throwOnError: false, strict: "ignore" });
+        }
         catch { return esc(_m); }
       });
       html2 = html2.replace(renderInline, (_m, expr) => {
-        try { return window.katex!.renderToString(String(expr).trim(), { displayMode: false, throwOnError: false, strict: "ignore" }); }
+        try {
+          const cleaned = sanitizeLatexExpr(String(expr).trim());
+          return window.katex!.renderToString(cleaned, { displayMode: false, throwOnError: false, strict: "ignore" });
+        }
+        catch { return esc(_m); }
+      });
+      html2 = html2.replace(renderInlineParen, (_m, expr) => {
+        try {
+          const cleaned = sanitizeLatexExpr(String(expr).trim());
+          return window.katex!.renderToString(cleaned, { displayMode: false, throwOnError: false, strict: "ignore" });
+        }
         catch { return esc(_m); }
       });
     }
