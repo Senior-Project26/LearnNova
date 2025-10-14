@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+
+import { useNavigate, useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
@@ -18,6 +19,8 @@ import {
 } from "@/components/ui/alert-dialog";
 
 interface Flashcard { question: string; answer: string }
+interface StudySetResponse { name?: string; cards?: Flashcard[]; error?: string }
+interface ErrorResponse { error?: string }
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -39,6 +42,7 @@ function dynamicFontSize(text: string, isFront: boolean): React.CSSProperties {
 
 export default function StudySet() {
   const { sid } = useParams<{ sid: string }>();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -52,6 +56,8 @@ export default function StudySet() {
   const [renameInput, setRenameInput] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [hidden, setHidden] = useState<Set<number>>(new Set()); // original card indices marked confident
+  const [includeConfident, setIncludeConfident] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -60,10 +66,10 @@ export default function StudySet() {
       setError(null);
       try {
         const res = await fetch(`/api/study_sets/${sid}`, { credentials: "include" });
-        const j = await res.json().catch(() => ({} as any));
+        const j: StudySetResponse = await res.json().catch(() => ({} as StudySetResponse));
         if (!mounted) return;
-        if (!res.ok) throw new Error((j as any)?.error || `Failed to load study set (${res.status})`);
-        const cs: Flashcard[] = Array.isArray(j?.cards) ? j.cards : [];
+        if (!res.ok) throw new Error(j?.error || `Failed to load study set (${res.status})`);
+        const cs: Flashcard[] = Array.isArray(j?.cards) ? j.cards! : [];
         const nm = String(j?.name || "Study Set");
         setName(nm);
         setRenameInput(nm);
@@ -77,9 +83,10 @@ export default function StudySet() {
         setOrder(base);
         setIdx(0);
         setIsFront(true);
-      } catch (e: any) {
+        setHidden(new Set());
+      } catch (e: unknown) {
         if (!mounted) return;
-        setError(e?.message || "Failed to load study set.");
+        setError(e instanceof Error ? e.message : "Failed to load study set.");
       } finally {
         if (mounted) setLoading(false);
       }
@@ -87,13 +94,124 @@ export default function StudySet() {
     return () => { mounted = false; };
   }, [sid]);
 
-  const canPrev = useMemo(() => idx > 0, [idx]);
-  const canNext = useMemo(() => idx < Math.max(0, order.length - 1), [idx, order.length]);
+  const findPrevIndex = useCallback((from: number): number | null => {
+    for (let j = from - 1; j >= 0; j--) {
+      const orig = order[j];
+      if (includeConfident || !hidden.has(orig)) return j;
+    }
+    return null;
+  }, [order, hidden, includeConfident]);
+  const findNextIndex = useCallback((from: number): number | null => {
+    for (let j = from + 1; j < order.length; j++) {
+      const orig = order[j];
+      if (includeConfident || !hidden.has(orig)) return j;
+    }
+    return null;
+  }, [order, hidden, includeConfident]);
+  const canPrev = useMemo(() => findPrevIndex(idx) !== null, [idx, findPrevIndex]);
+  const canNext = useMemo(() => findNextIndex(idx) !== null, [idx, findNextIndex]);
+  const hasVisible = useMemo(() => {
+    if (order.length === 0) return false;
+    if (includeConfident) return order.length > 0;
+    return order.some(oi => !hidden.has(oi));
+  }, [order, hidden, includeConfident]);
   const current = useMemo(() => {
     if (order.length === 0) return null;
     const oi = order[idx] ?? 0;
+    if (!includeConfident && hidden.has(oi)) return null;
     return cards[oi] ?? null;
-  }, [cards, order, idx]);
+  }, [cards, order, idx, hidden, includeConfident]);
+
+  useEffect(() => {
+    if (!includeConfident && order.length > 0) {
+      const orig = order[idx] ?? 0;
+      if (hidden.has(orig)) {
+        const n = findNextIndex(idx);
+        if (n !== null) {
+          setIdx(n);
+          setIsFront(true);
+          return;
+        }
+        const p = findPrevIndex(idx + 1);
+        if (p !== null) {
+          setIdx(p);
+          setIsFront(true);
+        }
+      }
+    }
+  }, [includeConfident, order, idx, hidden, findNextIndex, findPrevIndex]);
+
+  useEffect(() => {
+    if (order.length === 0) return;
+    if (includeConfident) return; // all visible
+    const oi = order[idx] ?? 0;
+    if (hidden.has(oi)) {
+      const n = findNextIndex(idx);
+      if (n !== null) {
+        setIdx(n);
+        setIsFront(true);
+        return;
+      }
+      const p = findPrevIndex(idx + 1);
+      if (p !== null) {
+        setIdx(p);
+        setIsFront(true);
+      }
+    }
+  }, [order, idx, hidden, includeConfident, findNextIndex, findPrevIndex]);
+
+  useEffect(() => {
+    if (current === null && hasVisible) {
+      const n = findNextIndex(idx);
+      if (n !== null) {
+        setIdx(n);
+        setIsFront(true);
+      } else {
+        const p = findPrevIndex(idx + 1);
+        if (p !== null) {
+          setIdx(p);
+          setIsFront(true);
+        }
+      }
+    }
+  }, [current, hasVisible, idx, findNextIndex, findPrevIndex]);
+
+  const goPrev = () => {
+    const j = findPrevIndex(idx);
+    if (j !== null) {
+      setIdx(j);
+      setIsFront(true);
+    }
+  };
+  const goNext = () => {
+    const j = findNextIndex(idx);
+    if (j !== null) {
+      setIdx(j);
+      setIsFront(true);
+    }
+  };
+  const markConfident = () => {
+    const orig = order[idx];
+    setHidden(prev => {
+      const next = new Set(prev);
+      next.add(orig);
+      return next;
+    });
+    // Ensure hidden cards are excluded from rotation after hiding
+    setIncludeConfident(false);
+    // Move to the next available card; if none, try previous
+    const n = findNextIndex(idx);
+    if (n !== null) {
+      setIdx(n);
+      setIsFront(true);
+    } else {
+      const p = findPrevIndex(idx + 1); // allow stepping back from current position
+      if (p !== null) {
+        setIdx(p);
+        setIsFront(true);
+      }
+    }
+  };
 
   return (
     <>
@@ -105,11 +223,16 @@ export default function StudySet() {
               {name || "Study Set"}
             </h1>
             <Button
-              variant="outline"
-              className="h-8 px-3 text-xs border-pink-400 text-pink-200 hover:bg-pink-500/10"
+              className="h-8 px-3 text-xs bg-[#852E4E] hover:bg-[#A33757]"
               onClick={() => { setRenameOpen(true); setRenameInput(name || ""); setRenameError(null); }}
             >
               Rename
+            </Button>
+            <Button
+              className="h-8 px-3 text-xs bg-[#852E4E] hover:bg-[#A33757]"
+              onClick={() => navigate(-1)}
+            >
+              Back
             </Button>
           </div>
           <p className="text-pink-100 mt-1">{cards.length} flashcard{cards.length === 1 ? "" : "s"}</p>
@@ -118,47 +241,64 @@ export default function StudySet() {
         <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Flashcard Viewer</CardTitle>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" className="text-[#FFBB94] border-[#FFBB94] hover:bg-[#852E4E]/30" onClick={() => setIsFront(f => !f)} title="Flip card">
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </div>
+            <div className="flex items-center gap-2"></div>
           </CardHeader>
           <CardContent>
             {loading ? (
               <div className="py-24 text-center text-pink-100">Loading…</div>
             ) : error ? (
               <div className="py-24 text-center text-red-300">{error}</div>
-            ) : cards.length === 0 ? (
-              <div className="py-24 text-center text-pink-100">No cards in this set yet.</div>
+            ) : !hasVisible ? (
+              <div className="py-24 text-center text-pink-100">No cards to study. {hidden.size > 0 ? 'You have hidden all cards for this session.' : 'This set is empty.'}</div>
             ) : (
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 flex items-center">
-                  <Button variant="ghost" disabled={!canPrev} onClick={() => { if (canPrev) { setIdx(i => i - 1); setIsFront(true); } }} className="hover:bg-transparent">
+                  <Button disabled={!canPrev} onClick={goPrev} className="bg-[#852E4E] hover:bg-[#A33757]">
                     <ChevronLeft className={`h-12 w-12 ${canPrev ? "text-white" : "text-white/30"}`} />
                   </Button>
                 </div>
                 <div className="absolute inset-y-0 right-0 flex items-center">
-                  <Button variant="ghost" disabled={!canNext} onClick={() => { if (canNext) { setIdx(i => i + 1); setIsFront(true); } }} className="hover:bg-transparent">
+                  <Button disabled={!canNext} onClick={goNext} className="bg-[#852E4E] hover:bg-[#A33757]">
                     <ChevronRight className={`h-12 w-12 ${canNext ? "text-white" : "text-white/30"}`} />
                   </Button>
                 </div>
 
                 <div className="px-12 py-10">
-                  <div className="min-h-[320px] flex items-center justify-center p-6 rounded-lg bg-[#852E4E]/30 border border-pink-700/40">
-                    <div style={dynamicFontSize(isFront ? current!.question : current!.answer, isFront)} className="w-full text-center">
-                      <MarkdownMathRenderer text={isFront ? current!.question : current!.answer} />
-                    </div>
+                  <div
+                    className="min-h-[320px] flex items-center justify-center p-6 rounded-lg bg-[#852E4E]/30 border border-pink-700/40 cursor-pointer select-none"
+                    onClick={() => setIsFront(f => !f)}
+                    title="Flip card"
+                  >
+                    {current ? (
+                      <div style={dynamicFontSize(isFront ? current.question : current.answer, isFront)} className="w-full text-center">
+                        <MarkdownMathRenderer text={isFront ? current.question : current.answer} />
+                      </div>
+                    ) : (
+                      <div className="text-pink-100">…</div>
+                    )}
                   </div>
                   <div className="mt-3 text-center text-sm text-pink-200">Card {order.length === 0 ? 0 : idx + 1} of {order.length} • {isFront ? "Front" : "Back"}</div>
                   <div className="mt-4 flex items-center justify-center gap-3">
-                    <Button onClick={() => setIsFront(f => !f)} className="bg-[#852E4E] hover:bg-[#A33757]">Flip</Button>
+                    <Button onClick={markConfident} className="bg-[#852E4E] hover:bg-[#A33757]">Hide Card</Button>
+                    <Button
+                      className="bg-[#852E4E] hover:bg-[#A33757]"
+                      disabled={hidden.size === 0 || includeConfident}
+                      onClick={() => setIncludeConfident(true)}
+                    >
+                      Show Card{hidden.size > 0 ? ` (${hidden.size})` : ''}
+                    </Button>
+                    <Button
+                      className="bg-[#852E4E] hover:bg-[#A33757]"
+                      onClick={() => { setHidden(new Set()); setIsFront(true); }}
+                    >
+                      Reset Session
+                    </Button>
+                    
                     {order.length > 0 && (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
-                            variant="outline"
-                            className="border-red-400 text-red-300 hover:bg-red-500/10"
+                            className="bg-[#852E4E] hover:bg-[#A33757]"
                             disabled={deleting}
                           >
                             Delete
@@ -170,8 +310,9 @@ export default function StudySet() {
                             <AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogCancel className="bg-[#852E4E] hover:bg-[#A33757] text-white">Cancel</AlertDialogCancel>
                             <AlertDialogAction
+                              className="bg-[#852E4E] hover:bg-[#A33757] text-white"
                               onClick={async () => {
                                 if (!current) return;
                                 try {
@@ -179,8 +320,8 @@ export default function StudySet() {
                                   const originalIndex = order[idx] ?? 0;
                                   const res = await fetch(`/api/study_sets/${sid}/cards/${originalIndex}`, { method: 'DELETE', credentials: 'include' });
                                   if (res.status !== 204) {
-                                    const j = await res.json().catch(() => ({} as any));
-                                    throw new Error((j as any)?.error || `Failed to delete (${res.status})`);
+                                    const j: ErrorResponse = await res.json().catch(() => ({} as ErrorResponse));
+                                    throw new Error(j?.error || `Failed to delete (${res.status})`);
                                   }
                                   // Update cards and order consistently with original index removal
                                   setCards(prev => {
@@ -188,6 +329,15 @@ export default function StudySet() {
                                     setOrder(prevOrder => {
                                       const withoutCurrent = prevOrder.filter((_, i) => i !== idx);
                                       const remapped = withoutCurrent.map(v => (v > originalIndex ? v - 1 : v));
+                                      // remap hidden indices as well
+                                      setHidden(prevHidden => {
+                                        const nh = new Set<number>();
+                                        prevHidden.forEach(h => {
+                                          if (h === originalIndex) return; // removed card
+                                          nh.add(h > originalIndex ? h - 1 : h);
+                                        });
+                                        return nh;
+                                      });
                                       // adjust idx to remain in bounds
                                       const newIdx = remapped.length === 0 ? 0 : Math.min(idx, remapped.length - 1);
                                       setIdx(newIdx);
@@ -196,7 +346,7 @@ export default function StudySet() {
                                     setIsFront(true);
                                     return nextCards;
                                   });
-                                } catch (e) {
+                                } catch (e: unknown) {
                                   console.error(e);
                                 } finally {
                                   setDeleting(false);
@@ -234,7 +384,7 @@ export default function StudySet() {
             placeholder="Study set name"
           />
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setRenameOpen(false)} disabled={renaming}>Cancel</Button>
+            <Button className="bg-[#852E4E] hover:bg-[#A33757]" onClick={() => setRenameOpen(false)} disabled={renaming}>Cancel</Button>
             <Button
               className="bg-[#852E4E] hover:bg-[#A33757]"
               disabled={renaming || !renameInput.trim()}
@@ -250,15 +400,15 @@ export default function StudySet() {
                     credentials: 'include',
                     body: JSON.stringify({ name: nm })
                   });
-                  const j = await res.json().catch(() => ({} as any));
+                  const j: ErrorResponse = await res.json().catch(() => ({} as ErrorResponse));
                   if (!res.ok) {
-                    setRenameError((j as any)?.error || `Failed to rename (${res.status})`);
+                    setRenameError(j?.error || `Failed to rename (${res.status})`);
                     return;
                   }
                   setName(nm);
                   setRenameOpen(false);
-                } catch (e: any) {
-                  setRenameError(e?.message || 'Failed to rename');
+                } catch (e: unknown) {
+                  setRenameError(e instanceof Error ? e.message : 'Failed to rename');
                 } finally {
                   setRenaming(false);
                 }

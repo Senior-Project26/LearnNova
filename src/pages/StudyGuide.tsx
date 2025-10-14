@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 
 type ComboOption = { id: number; title: string };
+type Item = { id: number; title?: string | null };
+const isItem = (x: unknown): x is Item =>
+  typeof x === "object" && x !== null && "id" in x && typeof (x as { id: unknown }).id === "number";
+type StudyGuideResponse = { content?: string | null; title?: string | null };
+type ApiError = { error?: string };
 function MultiCombo({
   label,
   options,
@@ -87,6 +92,7 @@ export default function StudyGuide() {
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const [savedGuideId, setSavedGuideId] = useState<number | null>(null);
   const location = useLocation() as { state?: { studyGuideId?: number } };
+  const navigate = useNavigate();
   const [viewingId, setViewingId] = useState<number | null>(null);
   const [titleInput, setTitleInput] = useState<string>("");
   const [savingTitle, setSavingTitle] = useState(false);
@@ -105,17 +111,17 @@ export default function StudyGuide() {
         try {
           setLoading(true);
           const res = await fetch(`/api/study_guides/${gid}`, { credentials: "include" });
-          const j = await res.json().catch(() => ({} as any));
+          const j: unknown = await res.json().catch(() => ({}));
           if (!res.ok) {
-            setError((j as any)?.error || `Failed to load study guide #${gid}`);
+            setError((j as ApiError).error || `Failed to load study guide #${gid}`);
             return;
           }
-          setGuide(j?.content || null);
+          setGuide((j as StudyGuideResponse).content ?? null);
           setSavedGuideId(gid);
           setViewingId(gid);
-          setTitleInput(j?.title || `Study Guide #${gid}`);
-        } catch (e: any) {
-          setError(e?.message || "Failed to load study guide");
+          setTitleInput((j as StudyGuideResponse).title ?? `Study Guide #${gid}`);
+        } catch (e: unknown) {
+          setError(e instanceof Error ? e.message : "Failed to load study guide");
         } finally {
           setLoading(false);
         }
@@ -128,7 +134,7 @@ export default function StudyGuide() {
     try {
       const last = sessionStorage.getItem("lastUploadResult");
       if (last) setComingFromSummary(true);
-    } catch {}
+    } catch { void 0; }
     // Load selectable lists
     (async () => {
       try {
@@ -137,19 +143,26 @@ export default function StudyGuide() {
           fetch("/api/all_summaries", { credentials: "include" }),
         ]);
         if (nRes.ok) {
-          const n = await nRes.json();
-          setAllNotes(((n?.items as any[]) || []).map(x => ({ id: x.id, title: x.title })));
+          const nRaw: unknown = await nRes.json();
+          const nItemsUnknown = (nRaw as { items?: unknown }).items;
+          const noteList = Array.isArray(nItemsUnknown)
+            ? nItemsUnknown.filter(isItem).map(x => ({ id: x.id, title: x.title ?? "" }))
+            : [];
+          setAllNotes(noteList);
         }
         if (sRes.ok) {
-          const s = await sRes.json();
-          const list = ((s?.items as any[]) || []).map(x => ({ id: x.id, title: x.title }));
+          const sRaw: unknown = await sRes.json();
+          const sItemsUnknown = (sRaw as { items?: unknown }).items;
+          const list = Array.isArray(sItemsUnknown)
+            ? sItemsUnknown.filter(isItem).map(x => ({ id: x.id, title: x.title ?? "" }))
+            : [];
           setAllSummaries(list);
           // If coming from Summary, auto-select most recent summary (API already returns newest first)
           if (comingFromSummary && list.length > 0) {
             setSelectedSummaryIds((ids) => (ids.length ? ids : [list[0].id]));
           }
         }
-      } catch {}
+      } catch { void 0; }
     })();
   }, [comingFromSummary]);
 
@@ -166,12 +179,16 @@ export default function StudyGuide() {
       if (selectedNoteIds.length > 0 || selectedSummaryIds.length > 0) {
         const notePromises = selectedNoteIds.map(async (id) => {
           const r = await fetch(`/api/notes/${id}`, { credentials: "include" });
-          const j = await r.json().catch(() => ({} as any));
+          const j: { title?: string; content?: string } = await r
+            .json()
+            .catch(() => ({} as { title?: string; content?: string }));
           return (j?.title ? `# Note: ${j.title}\n` : "") + (j?.content || "");
         });
         const summaryPromises = selectedSummaryIds.map(async (id) => {
           const r = await fetch(`/api/summaries/${id}`, { credentials: "include" });
-          const j = await r.json().catch(() => ({} as any));
+          const j: { title?: string; content?: string } = await r
+            .json()
+            .catch(() => ({} as { title?: string; content?: string }));
           return (j?.title ? `# Summary: ${j.title}\n` : "") + (j?.content || "");
         });
         const parts = await Promise.all([...notePromises, ...summaryPromises]);
@@ -182,23 +199,33 @@ export default function StudyGuide() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: combined }),
       });
-      const data: { guide?: string; error?: string } = await res.json().catch(() => ({} as any));
+      const data: { guide?: string; error?: string } = await res
+        .json()
+        .catch(() => ({} as { guide?: string; error?: string }));
       if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
       if (!data.guide) throw new Error("No guide returned");
       setGuide(data.guide);
-    } catch (e: any) {
-      setError(e?.message || "Failed to generate study guide");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to generate study guide");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="container mx-auto max-w-3xl p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">{viewingId ? "Study Guide" : "Study Guide Generator"}</h1>
-      {!guide && !viewingId && (
-        <div className="space-y-3">
-          <div className="grid md:grid-cols-2 gap-4">
+    <div className="relative min-h-screen overflow-hidden px-4 pt-24 pb-12">
+      <div className="container mx-auto max-w-3xl space-y-6 text-white">
+        <div className="text-center space-y-2">
+          <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-[#FFBB94] to-[#FB9590] text-transparent bg-clip-text">
+            {viewingId ? "Study Guide" : "Study Guide Generator"}
+          </h1>
+          {!viewingId && (
+            <p className="text-pink-100 mt-1">Select notes and summaries to generate a study guide with AI.</p>
+          )}
+        </div>
+        {!guide && !viewingId && (
+          <div className="space-y-4">
+            <div className="grid md:grid-cols-2 gap-4">
             <MultiCombo
               label="Notes"
               options={allNotes}
@@ -211,32 +238,41 @@ export default function StudyGuide() {
               selectedIds={selectedSummaryIds}
               setSelectedIds={setSelectedSummaryIds}
             />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => navigate(-1)}
+                className="px-3 py-1.5 rounded border border-[#FFBB94] text-[#FFBB94] bg-transparent hover:bg-[#852E4E]/30"
+              >
+                ← Back
+              </button>
+              <button
+                onClick={generateGuide}
+                disabled={loading || disableSubmit}
+                className="px-4 py-2 rounded border border-[#FFBB94] text-[#FFBB94] bg-transparent hover:bg-[#852E4E]/30 disabled:opacity-50"
+              >
+                {loading ? "Generating..." : "Generate Study Guide"}
+              </button>
+            </div>
+            {error && <p className="text-sm text-red-300">{error}</p>}
           </div>
-          <button
-            onClick={generateGuide}
-            disabled={loading || disableSubmit}
-            className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50"
-          >
-            {loading ? "Generating..." : "Generate Study Guide"}
-          </button>
-          {error && <p className="text-red-600">{error}</p>}
-        </div>
-      )}
+        )}
 
-      {guide && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex-1 flex items-center gap-2">
+        {guide && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex-1 flex items-center gap-2">
               {viewingId ? (
                 <>
                   <input
                     type="text"
-                    className="w-full px-2 py-1 border rounded"
+                    className="w-full px-2 py-1 rounded bg-[#4C1D3D]/60 text-white placeholder-pink-200/60 border border-pink-700/40"
                     value={titleInput}
                     onChange={(e) => setTitleInput(e.target.value)}
                   />
                   <button
-                    className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white disabled:opacity-60"
+                    className="px-3 py-1.5 text-xs rounded border border-[#FFBB94] text-[#FFBB94] bg-transparent hover:bg-[#852E4E]/30 disabled:opacity-60"
                     disabled={savingTitle || !titleInput.trim()}
                     onClick={async () => {
                       if (!viewingId) return;
@@ -245,7 +281,7 @@ export default function StudyGuide() {
                         setSavingTitle(true);
                         const res = await fetch(`/api/study_guides/${viewingId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ title }) });
                         // No need to update list here; Dashboard will reflect on next load
-                      } catch {}
+                      } catch { void 0; }
                       finally { setSavingTitle(false); }
                     }}
                   >
@@ -253,23 +289,23 @@ export default function StudyGuide() {
                   </button>
                 </>
               ) : (
-                <h2 className="text-xl font-semibold">Study Guide</h2>
+                <h2 className="text-xl font-semibold text-[#FFBB94]">Study Guide</h2>
+              )}
+              </div>
+              {!viewingId && (
+                <button
+                  className="px-3 py-1.5 rounded border border-[#FFBB94] text-[#FFBB94] bg-transparent hover:bg-[#852E4E]/30"
+                  onClick={() => { setGuide(null); setError(null); }}
+                >
+                  New Guide
+                </button>
               )}
             </div>
-            {!viewingId && (
+            <div className="flex items-center gap-2">
               <button
-                className="px-3 py-1.5 bg-gray-800 text-white rounded"
-                onClick={() => { setGuide(null); setError(null); }}
-              >
-                New Guide
-              </button>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              className="px-3 py-1.5 bg-green-600 text-white rounded disabled:opacity-60"
-              disabled={saving || savedGuideId !== null}
-              onClick={async () => {
+                className="px-3 py-1.5 rounded border border-[#FFBB94] text-[#FFBB94] bg-transparent hover:bg-[#852E4E]/30 disabled:opacity-60"
+                disabled={saving || savedGuideId !== null}
+                onClick={async () => {
                 if (!guide || savedGuideId !== null) return;
                 setSaveError(null);
                 setSaveSuccess(null);
@@ -284,27 +320,30 @@ export default function StudyGuide() {
                     credentials: 'include',
                     body: JSON.stringify({ title, content: guide }),
                   });
-                  const data = await res.json().catch(() => ({} as any));
-                  if (!res.ok) throw new Error((data as any)?.error || `Failed to save (${res.status})`);
-                  if ((data as any)?.id) setSavedGuideId(Number((data as any).id));
+                  const data: { id?: number; error?: string } = await res
+                    .json()
+                    .catch(() => ({} as { id?: number; error?: string }));
+                  if (!res.ok) throw new Error(data?.error || `Failed to save (${res.status})`);
+                  if (data?.id) setSavedGuideId(Number(data.id));
                   setSaveSuccess('Study Guide saved');
-                } catch (e: any) {
-                  setSaveError(e?.message || 'Failed to save study guide');
+                } catch (e: unknown) {
+                  setSaveError(e instanceof Error ? e.message : 'Failed to save study guide');
                 } finally {
                   setSaving(false);
                 }
-              }}
-            >
-              {savedGuideId !== null ? 'Saved' : (saving ? 'Saving…' : 'Save Study Guide')}
-            </button>
-            {saveSuccess && <span className="text-green-700 text-sm">{saveSuccess}</span>}
-            {saveError && <span className="text-red-600 text-sm">{saveError}</span>}
+                }}
+              >
+                {savedGuideId !== null ? 'Saved' : (saving ? 'Saving…' : 'Save Study Guide')}
+              </button>
+              {saveSuccess && <span className="text-green-300 text-sm">{saveSuccess}</span>}
+              {saveError && <span className="text-red-300 text-sm">{saveError}</span>}
+            </div>
+            <div className="p-4 rounded-lg bg-[#4C1D3D]/70 backdrop-blur-xl border border-pink-700/40 text-white">
+              <MarkdownMathRenderer text={guide} />
+            </div>
           </div>
-          <div className="bg-gray-50 p-4 rounded border">
-            <MarkdownMathRenderer text={guide} />
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
