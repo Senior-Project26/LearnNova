@@ -61,7 +61,7 @@ app.config.update(
 # ============================================================================
 
 # Initialize API clients (Study Buddy)
-#vision_client = vision.ImageAnnotatorClient()
+vision_client = vision.ImageAnnotatorClient()
 gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
@@ -724,6 +724,105 @@ def generate_study_guide(text: str) -> str:
 
 
 # ============================================================================
+# UTILITY FUNCTIONS - FLASHCARD GENERATION
+# ============================================================================
+
+def estimate_flashcard_count(text: str) -> int:
+    """Heuristic to pick number of flashcards proportional to input size."""
+    t = estimate_tokens(text or "")
+    if t <= 0:
+        return 10
+    # Roughly 1 card per ~80 tokens, clamp to [10, 80]
+    return max(10, min(80, t // 50))
+
+
+def sanitize_katex(s: str) -> str:
+    """Fix common issues from LLM output that break KaTeX.
+    - Remove ASCII control chars (except \n, \t)
+    - Restore missing backslashes for common LaTeX commands like frac, binom, sqrt, sum, Greek letters, etc.
+    - Convert HTML entities &gt; &lt; back to literal > <
+    """
+    try:
+        if not isinstance(s, str):
+            return s
+        out = s
+        # 1) Remove problematic control characters (keep \n, \t)
+        out = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", out)
+        # 2) Replace HTML entities for inequalities
+        out = out.replace("&gt;", ">").replace("&lt;", "<")
+        # 3) Add missing backslashes for common LaTeX commands if not already escaped
+        cmds = [
+            "frac", "binom", "sqrt", "sum", "prod", "alpha", "beta", "gamma", "delta", "epsilon",
+            "theta", "lambda", "mu", "sigma", "pi", "phi", "omega", "Omega", "ldots", "cdot",
+            "times", "leq", "geq", "neq", "pm", "mp", "overline", "underline", "hat", "bar",
+        ]
+        pattern = r"(?<!\\)\b(" + "|".join(cmds) + r")\b"
+        out = re.sub(pattern, r"\\\1", out)
+        return out
+    except Exception:
+        return s
+
+
+def generate_flashcards_with_gemini(text: str, count: int) -> list[dict]:
+    """Ask Gemini for JSON list of {question, answer} pairs.
+    Ensures valid structure and trims to requested count.
+    """
+    schema_hint = [
+        {"question": "State the Binomial Theorem.", "answer": "For integers $n\\ge 0$, $(a+b)^n = \\sum_{k=0}^n \\binom{n}{k} a^{n-k} b^k$."}
+    ]
+    prompt = (
+        "Generate flashcards as a JSON array only (no prose, no markdown). "
+        f"Return exactly {count} items. Each item must be an object with 'question' and 'answer' strings. "
+        "Make answers 1-3 sentences and include key formulas/examples when useful. "
+        "If math is involved, write LaTeX delimited by $...$ (inline) or $$...$$ (block). "
+        "When writing math, use KaTeX/LaTeX syntax for exponents, square roots, fractions, summations, and Greek letters (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, \\alpha). Do not use the caret '^' for exponents, plain 'sqrt', ASCII fractions, or plain Greek names. "
+        "For inequalities, use the literal '>' and '<' characters, not HTML entities like &gt; or &lt;. "
+        "If chemistry is involved, use mhchem syntax like \\ce{H2O}, \\ce{Na+}. "
+        "Do not include citations, references, or meta commentary.\n\nCONTENT:\n" + (text or "")
+    )
+
+    try:
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": {
+                    "type": "array",
+                    "minItems": max(1, min(count, 80)),
+                    "maxItems": count,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string"},
+                            "answer": {"type": "string"},
+                        },
+                        "required": ["question", "answer"],
+                    },
+                },
+            },
+        )
+        raw = (getattr(resp, "text", None) or "").strip()
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = parse_json_lenient(raw or "[]")
+        items = data if isinstance(data, list) else (data.get("items") if isinstance(data, dict) else [])
+        flashcards: list[dict] = []
+        if isinstance(items, list):
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                flashcards.append({"question": it.get("question").strip(), "answer": it.get("answer").strip()})
+                if len(flashcards) >= count:
+                    break
+        return flashcards
+    except Exception as e:
+        print(e, flush=True)
+        return []
+
+
+# ============================================================================
 # ROUTES - AUTHENTICATION
 # ============================================================================
 
@@ -1046,6 +1145,7 @@ def update_study_set(sid: int):
     finally:
         conn.close()
 
+
 # ============================================================================
 # ROUTES - COURSES
 # ============================================================================
@@ -1326,16 +1426,92 @@ def get_study_set(sid: int):
         cur.close()
         if not row:
             return jsonify(error="not found"), 404
-        sid, name, course_id, created_at, cards_json = row
+        sid_f, name, course_id, created_at, cards_json = row
         try:
             cards = json.loads(cards_json) if isinstance(cards_json, str) else (cards_json or [])
         except Exception:
             cards = []
-        return jsonify(id=sid, name=name, course_id=course_id, created_at=(created_at.isoformat() if created_at else None), cards=cards), 200
+        return jsonify(id=sid_f, name=name, course_id=course_id, created_at=(created_at.isoformat() if created_at else None), cards=cards), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
     finally:
         conn.close()
+
+
+@app.delete("/api/study_sets/<int:sid>")
+def delete_study_set(sid: int):
+    """Delete a study set owned by the current user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM study_sets WHERE id = %s AND user_id = %s RETURNING id", (sid, user_id))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        return ("", 204)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# ROUTES - FLASHCARDS (AI GENERATION)
+# ============================================================================
+
+@app.post("/api/flashcards")
+def create_flashcards_from_text():
+    """Generate flashcards from input text using Gemini and save as a study set.
+    Body: { title: str, text: str, course_id?: int }
+    Returns: { id, name, cards }
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "Flashcards").strip()[:120]
+    text = (data.get("text") or "").strip()
+    course_id = data.get("course_id", None)
+    if not text:
+        return jsonify(error="missing text"), 400
+    try:
+        n = estimate_flashcard_count(text)
+        items = generate_flashcards_with_gemini(text, n)
+        if not items:
+            return jsonify(error="failed to generate flashcards"), 500
+        conn = get_connection()
+        if not conn:
+            return jsonify(error="Database connection error"), 500
+        try:
+            ensure_study_sets_table(conn)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO study_sets (name, course_id, user_id, cards)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (title or "Flashcards", course_id, user_id, json.dumps(items)),
+            )
+            sid = cur.fetchone()[0]
+            conn.commit()
+            cur.close()
+            return jsonify(id=sid, name=title or "Flashcards", cards=items), 200
+        except Exception as e:
+            conn.rollback()
+            return jsonify(error=str(e)), 500
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify(error=str(e)), 500
 
 
 # ============================================================================
@@ -2349,7 +2525,7 @@ def get_session_user():
 @app.errorhandler(404)
 def not_found(e):
     """Error handler for frontend routes."""
-    return jsonify({"error": "Not Found - handled by frontend"}), 404
+    return jsonify({"error": f"Not Found - {e}"}), 404
 
 
 # ============================================================================

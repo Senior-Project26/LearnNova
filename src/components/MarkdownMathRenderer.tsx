@@ -85,6 +85,57 @@ function sanitizeKeepSupSub(html: string) {
   return out;
 }
 
+// Mask math segments so markdown emphasis doesn't modify underscores inside math.
+function maskMath(src: string): { text: string; items: { ph: string; expr: string; display: boolean }[] } {
+  let text = src;
+  const items: { ph: string; expr: string; display: boolean }[] = [];
+  const take = (expr: string, display: boolean) => {
+    // Use markdown-safe placeholder that won't be affected by italic/bold rules
+    const ph = `@@MATH${items.length}@@`;
+    items.push({ ph, expr, display });
+    return ph;
+  };
+  // Process block math $$...$$ first
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_m, g1) => take(String(g1), true));
+  // Process \[ ... \] block
+  text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_m, g1) => take(String(g1), true));
+  // Process inline math $...$ (avoid capturing empty / nested dollars)
+  text = text.replace(/\$([^\n$][^$]*?)\$/g, (_m, g1) => take(String(g1), false));
+  // Process \( ... \) inline
+  text = text.replace(/\\\(([^\n]*?)\\\)/g, (_m, g1) => take(String(g1), false));
+  return { text, items };
+}
+
+function unmaskMath(html: string, items: { ph: string; expr: string; display: boolean }[], ready: boolean): string {
+  let out = html;
+  for (const it of items) {
+    try {
+      if (ready && window.katex?.renderToString) {
+        const cleaned = String(it.expr).trim()
+          .replace(/(?<!\\)#/g, "\\#")
+          .replace(/(?<!\\)%/g, "\\%")
+          .replace(/(?<!\\)&/g, "\\&");
+        const rendered = window.katex!.renderToString(cleaned, {
+          displayMode: it.display,
+          throwOnError: false,
+          strict: "ignore",
+        });
+        out = out.split(it.ph).join(rendered);
+      } else {
+        // Fallback: show the original delimiters visibly (escaped to avoid HTML injection)
+        const delim = it.display ? "$$" : "$";
+        const fallback = esc(delim + String(it.expr) + delim);
+        out = out.split(it.ph).join(fallback);
+      }
+    } catch {
+      const delim = it.display ? "$$" : "$";
+      const fallback = esc(delim + String(it.expr) + delim);
+      out = out.split(it.ph).join(fallback);
+    }
+  }
+  return out;
+}
+
 function mdToHtml(md: string): string {
   const lines = (md || "").replace(/\r\n?/g, "\n").split("\n");
   const out: string[] = [];
@@ -172,58 +223,14 @@ export default function MarkdownMathRenderer({ text }: Props) {
       })
       .join("\n");
 
-    // First, convert markdown to basic HTML (escaped), then allow a small set
-    let html1 = mdToHtml(normalized);
+    // Mask math before markdown so underscores inside math aren't italicized
+    const masked = maskMath(normalized);
+    // Convert markdown to basic HTML (escaped), then allow a small set
+    const html1 = mdToHtml(masked.text);
     let html2 = sanitizeKeepSupSub(html1);
-
-    // Render math: $$...$$ blocks and $...$ inline, and also \[...\] (block) and \(...\) (inline)
-    const renderBlock = /\$\$([\s\S]*?)\$\$/g;
-    const renderInline = /\$([^\n$][^$]*?)\$/g;
-    const renderBlockBracket = /\\\[([\s\S]*?)\\\]/g; // \\[ ... \\]
-    const renderInlineParen = /\\\(([\s\S]*?)\\\)/g;  // \\( ... \\)
-
-    const sanitizeLatexExpr = (expr: string) => {
-      // Escape common special characters that are invalid unescaped in LaTeX text
-      // e.g. "#", "%", "&" frequently appear in natural language
-      // Avoid double-escaping by only escaping when not already escaped
-      return expr
-        .replace(/(?<!\\)#/g, "\\#")
-        .replace(/(?<!\\)%/g, "\\%")
-        .replace(/(?<!\\)&/g, "\\&");
-    };
-
-    if (ready && window.katex?.renderToString) {
-      html2 = html2.replace(renderBlock, (_m, expr) => {
-        try {
-          const cleaned = sanitizeLatexExpr(String(expr).trim());
-          return window.katex!.renderToString(cleaned, { displayMode: true, throwOnError: false, strict: "ignore" });
-        }
-        catch { return esc(_m); }
-      });
-      html2 = html2.replace(renderBlockBracket, (_m, expr) => {
-        try {
-          const cleaned = sanitizeLatexExpr(String(expr).trim());
-          return window.katex!.renderToString(cleaned, { displayMode: true, throwOnError: false, strict: "ignore" });
-        }
-        catch { return esc(_m); }
-      });
-      html2 = html2.replace(renderInline, (_m, expr) => {
-        try {
-          const cleaned = sanitizeLatexExpr(String(expr).trim());
-          return window.katex!.renderToString(cleaned, { displayMode: false, throwOnError: false, strict: "ignore" });
-        }
-        catch { return esc(_m); }
-      });
-      html2 = html2.replace(renderInlineParen, (_m, expr) => {
-        try {
-          const cleaned = sanitizeLatexExpr(String(expr).trim());
-          return window.katex!.renderToString(cleaned, { displayMode: false, throwOnError: false, strict: "ignore" });
-        }
-        catch { return esc(_m); }
-      });
-    }
-
-    return html2;
+    // Unmask and render math (KaTeX if ready, otherwise safe fallback)
+    const finalHtml = unmaskMath(html2, masked.items, ready);
+    return finalHtml;
   }, [text, ready]);
 
   return (

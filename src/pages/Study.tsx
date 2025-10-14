@@ -122,6 +122,20 @@ const Study = () => {
 
   // ---- HANDLERS ----
   const openSet = (id: number) => navigate(`/study-set/${id}`);
+  const deleteSet = async (id: number) => {
+    const ok = window.confirm("Delete this study set? This cannot be undone.");
+    if (!ok) return;
+    try {
+      const res = await fetch(`/api/study_sets/${id}`, { method: 'DELETE', credentials: 'include' });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({} as { error?: string }));
+        throw new Error(j?.error || `Failed to delete set (${res.status})`);
+      }
+      setStudySets((prev) => prev.filter((s) => s.id !== id));
+    } catch (e: unknown) {
+      setSetsError(e instanceof Error ? e.message : 'Failed to delete study set');
+    }
+  };
 
   // ---- COMPUTED PROGRESS ----
   const totalProgress = 0;
@@ -227,7 +241,12 @@ const Study = () => {
                       <div className="font-semibold text-[#FFBB94]">{set.name}</div>
                       <div className="text-xs text-pink-200">{set.cardsCount} cards{set.courseName ? ` • ${set.courseName}` : ''}</div>
                     </div>
-                    <Button onClick={() => openSet(set.id)} className="bg-[#852E4E] hover:bg-[#A33757]">Study</Button>
+                    <div className="flex items-center gap-2">
+                      <Button onClick={() => openSet(set.id)} className="bg-[#852E4E] hover:bg-[#A33757]">Study</Button>
+                      <Button onClick={() => deleteSet(set.id)} className="bg-transparent hover:bg-[#A33757]/30 text-red-200 border border-red-400/40">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </CardContent>

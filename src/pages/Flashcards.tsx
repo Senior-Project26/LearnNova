@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { useLocation } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -351,7 +352,12 @@ const Flashcards = () => {
       const res = await fetch("/api/flashcards", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: title.trim() || "Flashcards", text: combined }),
+        credentials: "include",
+        body: JSON.stringify({
+          title: title.trim() || "Flashcards",
+          text: combined,
+          course_id: typeof selectedCourseId === "number" ? selectedCourseId : null,
+        }),
       });
       if (!res.ok) {
         const msg = (await res.json().catch(() => ({} as ErrorResponse))).error || `Request failed (${res.status})`;
@@ -615,8 +621,14 @@ const Flashcards = () => {
               <ul className="space-y-3">
                 {cards.map((c, idx) => (
                   <li key={idx} className="p-3 rounded-md bg-[#852E4E]/40">
-                    <div className="font-semibold text-[#FFBB94]">Q: {c.question}</div>
-                    <div className="text-pink-100 mt-1">A: {c.answer}</div>
+                    <div className="font-semibold text-[#FFBB94]">
+                      Q:
+                      <MarkdownMathRenderer text={c.question} />
+                    </div>
+                    <div className="text-pink-100 mt-1">
+                      A:
+                      <MarkdownMathRenderer text={c.answer} />
+                    </div>
                     <div className="mt-3 flex flex-col gap-2">
                       <div className="flex items-center gap-2">
                         <select
