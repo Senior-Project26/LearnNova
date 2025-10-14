@@ -12,6 +12,13 @@ interface Flashcard {
 }
 
 type ComboOption = { id: number; title: string };
+type ApiList<T> = { items?: T[] };
+interface Course { id: number; name: string }
+type CoursesResponse = { courses?: Course[] };
+type StudySetCreateResponse = { id?: number; name?: string; error?: string };
+type ContentItem = { title?: string; content?: string };
+type ErrorResponse = { error?: string };
+
 function MultiCombo({
   label,
   options,
@@ -40,24 +47,24 @@ function MultiCombo({
       <span className="font-medium">{label}</span>
       <button
         type="button"
-        className="mt-2 w-full p-2 border rounded flex items-center justify-between bg-white text-black"
+        className="mt-2 w-full p-2 border rounded flex items-center justify-between bg-[#4C1D3D]/60 text-white border-pink-700/40 hover:bg-[#4C1D3D]/70"
         onClick={() => setOpen(o => !o)}
       >
         <span>{count > 0 ? `${count} selected` : `Select ${label.toLowerCase()}`}</span>
         <span className="text-gray-500">▾</span>
       </button>
       {open && (
-        <div className="absolute z-10 mt-1 w-full bg-white border rounded shadow-lg p-2">
+        <div className="absolute z-10 mt-1 w-full bg-[#4C1D3D] border border-pink-700/40 rounded shadow-lg p-2 text-white">
           <div className="flex items-center gap-2 mb-2">
             <input
               type="text"
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search..."
-              className="w-full px-2 py-1 border rounded"
+              className="w-full px-2 py-1 rounded bg-[#4C1D3D]/60 text-white placeholder-pink-200/60 border border-pink-700/40 focus:outline-none focus:ring-2 focus:ring-pink-400/40"
             />
             <button
-              className="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200"
+              className="text-xs px-2 py-1 rounded bg-[#852E4E] text-white hover:bg-[#A33757]"
               onClick={clearAll}
               type="button"
             >
@@ -67,7 +74,7 @@ function MultiCombo({
           <ul className="max-h-56 overflow-auto space-y-1">
             {filtered.map(opt => (
               <li key={opt.id}>
-                <label className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50 cursor-pointer">
+                <label className="flex items-center gap-2 px-2 py-1 rounded hover:bg-[#852E4E]/30 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={selectedIds.includes(opt.id)}
@@ -78,7 +85,7 @@ function MultiCombo({
               </li>
             ))}
             {filtered.length === 0 && (
-              <li className="text-xs text-gray-500 px-2 py-1">No matches</li>
+              <li className="text-xs text-pink-200 px-2 py-1">No matches</li>
             )}
           </ul>
         </div>
@@ -117,14 +124,20 @@ const Flashcards = () => {
           fetch("/api/all_summaries", { credentials: "include" }),
         ]);
         if (nRes.ok) {
-          const n = await nRes.json().catch(() => ({} as any));
-          setAllNotes(((n?.items as any[]) || []).map(x => ({ id: x.id, title: x.title })));
+          const n: ApiList<ComboOption> = await nRes
+            .json()
+            .catch(() => ({ items: [] } as ApiList<ComboOption>));
+          setAllNotes((n.items ?? []).map(x => ({ id: x.id, title: x.title })));
         }
         if (sRes.ok) {
-          const s = await sRes.json().catch(() => ({} as any));
-          setAllSummaries(((s?.items as any[]) || []).map(x => ({ id: x.id, title: x.title })));
+          const s: ApiList<ComboOption> = await sRes
+            .json()
+            .catch(() => ({ items: [] } as ApiList<ComboOption>));
+          setAllSummaries((s.items ?? []).map(x => ({ id: x.id, title: x.title })));
         }
-      } catch {}
+      } catch (e) {
+        console.error(e);
+      }
     })();
   }, [mode]);
 
@@ -137,14 +150,17 @@ const Flashcards = () => {
   const [courses, setCourses] = useState<Array<{ id: number; name: string }>>([]);
   const [selectedCourseId, setSelectedCourseId] = useState<number | "">("");
   const [unauthorized, setUnauthorized] = useState(false);
+  const [newCourseName, setNewCourseName] = useState("");
 
   useEffect(() => {
-    if (mode !== "create") return;
+    // Load courses on mount and when mode changes
     let mounted = true;
     (async () => {
       try {
         const res = await fetch("/api/courses", { credentials: "include" });
-        const data = await res.json().catch(() => ({} as any));
+        const data: CoursesResponse = await res
+          .json()
+          .catch(() => ({} as CoursesResponse));
         if (!mounted) return;
         if (res.status === 401) {
           setUnauthorized(true);
@@ -152,33 +168,127 @@ const Flashcards = () => {
           return;
         }
         if (res.ok) {
-          const list = Array.isArray((data as any)?.courses) ? (data as any).courses : [];
-          setCourses(list.map((c: any) => ({ id: c.id, name: c.name })));
+          const list = Array.isArray(data.courses) ? data.courses : [];
+          setCourses(list.map((c: Course) => ({ id: c.id, name: c.name })));
         }
-      } catch {}
+      } catch (e) {
+        console.error(e);
+      }
     })();
     return () => { mounted = false; };
   }, [mode]);
 
+  const addCourse = async () => {
+    const name = newCourseName.trim();
+    if (!name) return;
+    try {
+      const res = await fetch("/api/courses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ name, description: name }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { course?: { id?: number; name?: string }; error?: string };
+      const createdId = data?.course?.id;
+      const createdName = data?.course?.name || name;
+      if (!res.ok || typeof createdId !== "number") throw new Error(data?.error || `Failed to add course (${res.status})`);
+      setCourses(prev => [...prev, { id: createdId!, name: createdName }]);
+      setSelectedCourseId(createdId!);
+      setNewCourseName("");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   // Create-mode: Study Set list from backend; show 'Default Set' only when list is empty
   const [studySets, setStudySets] = useState<Array<{ id: number; name: string }>>([]);
   const [newSetName, setNewSetName] = useState("");
-  const [selectedStudySetId, setSelectedStudySetId] = useState<number | "" | "default">("");
+  const [selectedStudySetId, setSelectedStudySetId] = useState<number | "" | "new">("");
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Per-generated-card controls
+  const [perCardSelectedSet, setPerCardSelectedSet] = useState<Record<number, string | number>>({});
+  const [perCardNewSetName, setPerCardNewSetName] = useState<Record<number, string>>({});
+  const [perCardMsg, setPerCardMsg] = useState<Record<number, string>>({});
+  const [perCardLoading, setPerCardLoading] = useState<Record<number, boolean>>({});
+
+  const addGeneratedCardToSet = async (idx: number, card: Flashcard) => {
+    try {
+      setPerCardMsg(m => ({ ...m, [idx]: "" }));
+      setPerCardLoading(m => ({ ...m, [idx]: true }));
+      let targetSetId: number | null = null;
+      const choice = perCardSelectedSet[idx];
+      if (!choice || choice === "") return; // require a selection
+      if (choice === "new") {
+        const name = (perCardNewSetName[idx] || "").trim();
+        if (!name) return;
+        const res = await fetch("/api/study_sets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ name, course_id: typeof selectedCourseId === "number" ? selectedCourseId : null }),
+        });
+        const j = (await res.json().catch(() => ({}))) as StudySetCreateResponse;
+        if (!res.ok || typeof j?.id !== "number") throw new Error(j?.error || `Failed to create set (${res.status})`);
+        targetSetId = j.id!;
+        setStudySets(prev => [...prev, { id: targetSetId!, name }]);
+        setPerCardNewSetName(m => ({ ...m, [idx]: "" }));
+        setPerCardSelectedSet(m => ({ ...m, [idx]: String(targetSetId) }));
+      } else if (choice === "default") {
+        const res = await fetch("/api/study_sets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ name: "Default Set", course_id: typeof selectedCourseId === "number" ? selectedCourseId : null }),
+        });
+        const j = (await res.json().catch(() => ({}))) as StudySetCreateResponse;
+        if (!res.ok || typeof j?.id !== "number") throw new Error(j?.error || `Failed to create Default Set (${res.status})`);
+        targetSetId = j.id!;
+        setStudySets(prev => [...prev, { id: targetSetId!, name: "Default Set" }]);
+        setPerCardSelectedSet(m => ({ ...m, [idx]: String(targetSetId) }));
+      } else {
+        targetSetId = Number(choice);
+      }
+
+      if (typeof targetSetId === "number") {
+        const res2 = await fetch(`/api/study_sets/${targetSetId}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ question: card.question, answer: card.answer }),
+        });
+        const j2: ErrorResponse = (await res2.json().catch(() => ({} as ErrorResponse)));
+        if (!res2.ok) throw new Error(j2?.error || `Failed to add card (${res2.status})`);
+        const setName = choice === "default" ? "Default Set" : (choice === "new" ? (perCardNewSetName[idx] || "New Set") : (studySets.find(s => String(s.id) === String(choice))?.name || "Set"));
+        setPerCardMsg(m => ({ ...m, [idx]: `Flashcard added to ${setName}.` }));
+      }
+    } catch (e) {
+      console.error(e);
+      setPerCardMsg(m => ({ ...m, [idx]: "Failed to add flashcard." }));
+    } finally {
+      setPerCardLoading(m => ({ ...m, [idx]: false }));
+    }
+  };
+
   // Load study sets from backend (optionally filtered by course)
   useEffect(() => {
-    if (mode !== "create") return;
+    // Load study sets for the selected course (available in both modes)
     let mounted = true;
     (async () => {
       try {
         const qs = selectedCourseId ? `?course_id=${selectedCourseId}` : "";
         const res = await fetch(`/api/study_sets${qs}`, { credentials: "include" });
-        const data = await res.json().catch(() => ({} as any));
+        const data: ApiList<{ id: number; name: string }> = await res
+          .json()
+          .catch(() => ({ items: [] }));
         if (!mounted) return;
-        if (res.ok && Array.isArray((data as any)?.items)) {
-          setStudySets(((data as any).items as any[]).map(x => ({ id: x.id, name: x.name })));
+        if (res.ok) {
+          const items = Array.isArray(data.items) ? data.items : [];
+          setStudySets(items.map(x => ({ id: x.id, name: x.name })));
+          if (items.length === 0) {
+            setSelectedStudySetId("new");
+          }
         } else if (res.status === 401) {
           setStudySets([]);
         }
@@ -200,9 +310,11 @@ const Flashcards = () => {
         credentials: "include",
         body: JSON.stringify({ name, course_id: typeof selectedCourseId === "number" ? selectedCourseId : null }),
       });
-      const data = await res.json().catch(() => ({} as any));
-      if (!res.ok) throw new Error((data as any)?.error || `Failed to add study set (${res.status})`);
-      const created = data as any;
+      const data: StudySetCreateResponse = await res
+        .json()
+        .catch(() => ({} as StudySetCreateResponse));
+      if (!res.ok) throw new Error(data.error || `Failed to add study set (${res.status})`);
+      const created = data;
       if (typeof created?.id === "number") {
         setStudySets(prev => [...prev, { id: created.id, name }]);
         setSelectedStudySetId(created.id);
@@ -224,12 +336,12 @@ const Flashcards = () => {
       if (!combined && (selectedNoteIds.length > 0 || selectedSummaryIds.length > 0)) {
         const notePromises = selectedNoteIds.map(async (id) => {
           const r = await fetch(`/api/notes/${id}`, { credentials: "include" });
-          const j = await r.json().catch(() => ({} as any));
+          const j: ContentItem = await r.json().catch(() => ({} as ContentItem));
           return (j?.title ? `# Note: ${j.title}\n` : "") + (j?.content || "");
         });
         const summaryPromises = selectedSummaryIds.map(async (id) => {
           const r = await fetch(`/api/summaries/${id}`, { credentials: "include" });
-          const j = await r.json().catch(() => ({} as any));
+          const j: ContentItem = await r.json().catch(() => ({} as ContentItem));
           return (j?.title ? `# Summary: ${j.title}\n` : "") + (j?.content || "");
         });
         const parts = await Promise.all([...notePromises, ...summaryPromises]);
@@ -242,14 +354,14 @@ const Flashcards = () => {
         body: JSON.stringify({ title: title.trim() || "Flashcards", text: combined }),
       });
       if (!res.ok) {
-        const msg = (await res.json().catch(() => ({} as any))).error || `Request failed (${res.status})`;
+        const msg = (await res.json().catch(() => ({} as ErrorResponse))).error || `Request failed (${res.status})`;
         throw new Error(msg);
       }
       const data = await res.json();
       const list: Flashcard[] = Array.isArray(data?.cards) ? data.cards : [];
       setCards(list);
-    } catch (e: any) {
-      setError(e?.message || "Failed to generate flashcards.");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to generate flashcards.");
     } finally {
       setLoading(false);
     }
@@ -265,7 +377,37 @@ const Flashcards = () => {
           {mode === "generate" ? (
             <p className="text-pink-100">Select notes and summaries or paste text, then generate AI flashcards.</p>
           ) : (
-            <p className="text-pink-100">Write on the card. Flip to switch between question/definition and answer.</p>
+            <p className="text-pink-100">Write your question or definition on the front and your answer on the back. Flip the card anytime to review or edit. You can also add cards to a study set for easier organization and review.</p>
+          )}
+        </div>
+
+        {/* Global Course selector */}
+        <div className="space-y-2">
+          <label className="block text-sm font-medium">Course</label>
+          <div className="flex items-center gap-2">
+            <select
+              className="block w-full border rounded p-2 bg-[#4C1D3D]/60 text-white border-pink-700/40 focus:outline-none focus:ring-2 focus:ring-pink-400/40"
+              value={selectedCourseId}
+              onChange={(e) => setSelectedCourseId(e.target.value ? Number(e.target.value) : "")}
+              disabled={unauthorized}
+            >
+              <option value="">None</option>
+              {courses.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="New course name"
+              value={newCourseName}
+              onChange={(e) => setNewCourseName(e.target.value)}
+              className="bg-[#4C1D3D]/60 text-white placeholder-pink-200/60 border border-pink-700/40 focus-visible:ring-pink-400/40"
+            />
+            <Button type="button" onClick={addCourse} className="bg-[#852E4E] hover:bg-[#A33757]">Add Course</Button>
+          </div>
+          {unauthorized && (
+            <p className="text-xs text-pink-200">Log in to view and create your courses.</p>
           )}
         </div>
 
@@ -295,7 +437,7 @@ const Flashcards = () => {
                   placeholder="Paste your notes or summary here... (optional)"
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  className="min-h-40 text-black"
+                  className="min-h-40 bg-[#4C1D3D]/60 text-white placeholder-pink-200/60 border border-pink-700/40 focus-visible:ring-pink-400/40"
                 />
               </div>
               <div className="flex items-center gap-2">
@@ -303,7 +445,7 @@ const Flashcards = () => {
                   placeholder="Set title (optional)"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  className="text-black"
+                  className="bg-[#4C1D3D]/60 text-white placeholder-pink-200/60 border border-pink-700/40 focus-visible:ring-pink-400/40"
                 />
                 <Button onClick={generate} disabled={loading || disableGenerate} className="bg-[#852E4E] hover:bg-[#A33757]">
                   {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Generate"}
@@ -318,61 +460,44 @@ const Flashcards = () => {
               <CardTitle>Draft a Flashcard</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {/* Course selection */}
-              <div className="space-y-2">
-                <label className="block text-sm font-medium">Course</label>
-                <select
-                  className="block w-full border rounded p-2 bg-white text-black"
-                  value={selectedCourseId}
-                  onChange={(e) => setSelectedCourseId(e.target.value ? Number(e.target.value) : "")}
-                  disabled={unauthorized}
-                >
-                  <option value="">None</option>
-                  {courses.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-                {unauthorized && (
-                  <p className="text-xs text-pink-200">Log in to view your courses.</p>
-                )}
-              </div>
-
               {/* Study Set selector (local only) */}
               <div className="space-y-2">
                 <label className="block text-sm font-medium">Study Set</label>
                 <div className="flex items-center gap-2">
                   <select
-                    className="block w-full border rounded p-2 bg-white text-black"
+                    className="block w-full border rounded p-2 bg-[#4C1D3D]/60 text-white border-pink-700/40 focus:outline-none focus:ring-2 focus:ring-pink-400/40"
                     value={String(selectedStudySetId)}
                     onChange={(e) => {
                       const v = e.target.value;
-                      if (v === "" ) return setSelectedStudySetId("");
-                      if (v === "default") return setSelectedStudySetId("default");
+                      if (v === "") return setSelectedStudySetId("");
+                      if (v === "new") return setSelectedStudySetId("new");
                       setSelectedStudySetId(Number(v));
                     }}
                   >
                     {studySets.length === 0 ? (
-                      // Only Default Set when no custom study sets exist
-                      <option value="default">Default Set</option>
+                      // Only Create New when no custom study sets exist
+                      <option value="new">Create New…</option>
                     ) : (
                       <>
-                        <option value="">Select a Study Set</option>
-                        {studySets.map((s) => (
-                          <option key={s.id} value={s.id}>{s.name}</option>
+                        <option value="new">Create New…</option>
+                        {studySets.map((studySet) => (
+                          <option key={studySet.id} value={studySet.id}>{studySet.name}</option>
                         ))}
                       </>
                     )}
                   </select>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Input
-                    placeholder="New study set name"
-                    value={newSetName}
-                    onChange={(e) => setNewSetName(e.target.value)}
-                    className="text-black"
-                  />
                   <Button type="button" onClick={addStudySet} className="bg-[#852E4E] hover:bg-[#A33757]">Add</Button>
                 </div>
+                {selectedStudySetId === "new" && (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="Name your set"
+                      value={newSetName}
+                      onChange={(e) => setNewSetName(e.target.value)}
+                      className="bg-[#4C1D3D]/60 text-white placeholder-pink-200/60 border border-pink-700/40 focus-visible:ring-pink-400/40"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-end">
@@ -397,14 +522,14 @@ const Flashcards = () => {
                     placeholder="Front (question/definition)"
                     value={frontText}
                     onChange={(e) => setFrontText(e.target.value)}
-                    className="min-h-32 text-black"
+                    className="min-h-32 bg-[#4C1D3D]/60 text-white placeholder-pink-200/60 border border-pink-700/40 focus-visible:ring-pink-400/40"
                   />
                 ) : (
                   <Textarea
                     placeholder="Back (answer/term)"
                     value={backText}
                     onChange={(e) => setBackText(e.target.value)}
-                    className="min-h-32 text-black"
+                    className="min-h-32 bg-[#4C1D3D]/60 text-white placeholder-pink-200/60 border border-pink-700/40 focus-visible:ring-pink-400/40"
                   />
                 )}
               </div>
@@ -412,7 +537,12 @@ const Flashcards = () => {
                 <Button
                   type="button"
                   className="bg-[#852E4E] hover:bg-[#A33757]"
-                  disabled={selectedStudySetId === "" || !frontText.trim() || !backText.trim()}
+                  disabled={
+                    selectedStudySetId === "" ||
+                    !frontText.trim() ||
+                    !backText.trim() ||
+                    (selectedStudySetId === "new" && !newSetName.trim())
+                  }
                   onClick={async () => {
                     if (selectedStudySetId === "") return;
                     if (!frontText.trim() || !backText.trim()) {
@@ -422,40 +552,48 @@ const Flashcards = () => {
                     setSaveError(null);
                     try {
                       let targetSetId: number | null = null;
-                      if (selectedStudySetId === "default") {
-                        const ok = window.confirm("Save to 'Default Set'? This may make it harder to differentiate topics later.");
-                        if (!ok) return;
+                      if (selectedStudySetId === "new") {
+                        const name = newSetName.trim();
+                        if (!name) return;
                         setSaveLoading(true);
                         const res = await fetch("/api/study_sets", {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           credentials: "include",
-                          body: JSON.stringify({ name: "Default Set", course_id: typeof selectedCourseId === "number" ? selectedCourseId : null }),
+                          body: JSON.stringify({ name, course_id: typeof selectedCourseId === "number" ? selectedCourseId : null }),
                         });
-                        const data = await res.json().catch(() => ({} as any));
-                        if (!res.ok || typeof (data as any)?.id !== "number") {
-                          throw new Error((data as any)?.error || `Failed to create Default Set (${res.status})`);
+                        const data = (await res.json().catch(() => ({} as StudySetCreateResponse))) as StudySetCreateResponse;
+                        if (!res.ok || typeof data?.id !== "number") {
+                          throw new Error(data?.error || `Failed to create study set (${res.status})`);
                         }
-                        targetSetId = Number((data as any).id);
-                        setStudySets(prev => [...prev, { id: targetSetId!, name: "Default Set" }]);
+                        targetSetId = Number(data.id);
+                        setStudySets(prev => [...prev, { id: targetSetId!, name }]);
                         setSelectedStudySetId(targetSetId);
+                        setNewSetName("");
                       } else {
-                        targetSetId = selectedStudySetId as number;
+                        // Use the existing selected study set
+                        targetSetId = Number(selectedStudySetId);
+                        setSaveLoading(true);
                       }
-                      setSaveLoading(true);
-                      const payload: any = { question: frontText, answer: backText };
-                      const res2 = await fetch(`/api/study_sets/${targetSetId}/cards`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        credentials: "include",
-                        body: JSON.stringify(payload),
-                      });
-                      const j = await res2.json().catch(() => ({} as any));
-                      if (!res2.ok) throw new Error((j as any)?.error || `Failed to save card (${res2.status})`);
-                      setFrontText("");
-                      setBackText("");
-                    } catch (e: any) {
-                      setSaveError(e?.message || "Failed to save flashcard");
+
+                      // If we have a target set, attempt to save the flashcard
+                      if (typeof targetSetId === "number") {
+                        const res2 = await fetch(`/api/study_sets/${targetSetId}/cards`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          credentials: "include",
+                          body: JSON.stringify({ question: frontText.trim(), answer: backText.trim() }),
+                        });
+                        const j: ErrorResponse = await res2.json().catch(() => ({} as ErrorResponse));
+                        if (!res2.ok) {
+                          throw new Error(j?.error || `Failed to save (${res2.status})`);
+                        }
+                        // Reset inputs after successful save
+                        setFrontText("");
+                        setBackText("");
+                      }
+                    } catch (e: unknown) {
+                      setSaveError(e instanceof Error ? e.message : "Failed to save flashcard.");
                     } finally {
                       setSaveLoading(false);
                     }
@@ -468,7 +606,6 @@ const Flashcards = () => {
             </CardContent>
           </Card>
         )}
-
         {cards.length > 0 && (
           <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white">
             <CardHeader>
@@ -480,6 +617,43 @@ const Flashcards = () => {
                   <li key={idx} className="p-3 rounded-md bg-[#852E4E]/40">
                     <div className="font-semibold text-[#FFBB94]">Q: {c.question}</div>
                     <div className="text-pink-100 mt-1">A: {c.answer}</div>
+                    <div className="mt-3 flex flex-col gap-2">
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="block w-56 border rounded p-2 bg-[#4C1D3D]/60 text-white border-pink-700/40 focus:outline-none focus:ring-2 focus:ring-pink-400/40"
+                          value={String(perCardSelectedSet[idx] ?? "")}
+                          onChange={(e) => setPerCardSelectedSet(m => ({ ...m, [idx]: e.target.value }))}
+                        >
+                          <option value="">Select Set…</option>
+                          <option value="default">Default Set</option>
+                          <option value="new">Create New…</option>
+                          {studySets.map((s) => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                        <Button
+                          type="button"
+                          disabled={!perCardSelectedSet[idx] || perCardSelectedSet[idx] === "new" && !(perCardNewSetName[idx] || "").trim() || !!perCardLoading[idx]}
+                          onClick={() => addGeneratedCardToSet(idx, c)}
+                          className="bg-[#852E4E] hover:bg-[#A33757]"
+                        >
+                          {perCardLoading[idx] ? "Adding…" : "Add to Set"}
+                        </Button>
+                      </div>
+                      {perCardSelectedSet[idx] === "new" && (
+                        <div className="flex items-center gap-2">
+                          <Input
+                            placeholder="New set name"
+                            value={perCardNewSetName[idx] || ""}
+                            onChange={(e) => setPerCardNewSetName(m => ({ ...m, [idx]: e.target.value }))}
+                            className="bg-[#4C1D3D]/60 text-white placeholder-pink-200/60 border border-pink-700/40 focus-visible:ring-pink-400/40 w-56"
+                          />
+                        </div>
+                      )}
+                      {perCardMsg[idx] && (
+                        <div className="text-xs text-pink-200">{perCardMsg[idx]}</div>
+                      )}
+                    </div>
                   </li>
                 ))}
               </ul>

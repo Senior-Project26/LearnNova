@@ -19,6 +19,8 @@ from werkzeug.utils import secure_filename
 
 # Third-Party: Environment & Configuration
 from dotenv import load_dotenv
+load_dotenv()
+
 
 # Third-Party: Google & AI
 from google import genai
@@ -59,7 +61,7 @@ app.config.update(
 # ============================================================================
 
 # Initialize API clients (Study Buddy)
-vision_client = vision.ImageAnnotatorClient()
+#vision_client = vision.ImageAnnotatorClient()
 gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
@@ -81,12 +83,7 @@ except Exception as e:
 
 def get_connection():
     try:
-        return psycopg2.connect(
-            host="localhost",
-            database="learnnova",
-            user="postgres",
-            password=os.getenv("POSTGRES_PASSWORD", "")
-        )
+        return psycopg2.connect(os.getenv("DATABASE_URL"))
     except Exception as e:
         print("Database connection failed:", e, flush=True)
         return None
