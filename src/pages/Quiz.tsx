@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 // Types
 type QuizSize = "small" | "medium" | "large" | "comprehensive";
@@ -13,6 +15,25 @@ type QuizQuestion = {
 type QuizResponse = {
   questions: QuizQuestion[];
 };
+
+type ResumeQuizResponse = {
+  questions?: Array<{ id: number; question: string; options: string[]; correctIndex: number | null }>;
+  next_unanswered_index?: number;
+  score?: number;
+  error?: string;
+};
+
+type ContentResp = { title?: string; content?: string };
+function parseContentResp(u: unknown): ContentResp {
+  if (u && typeof u === "object") {
+    const o = u as Record<string, unknown>;
+    return {
+      title: typeof o.title === "string" ? o.title : undefined,
+      content: typeof o.content === "string" ? o.content : undefined,
+    };
+  }
+  return {};
+}
 
 // Simple checkbox combobox for multi-select
 type ComboOption = { id: number; title: string };
@@ -100,6 +121,7 @@ export default function Quiz() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const location = useLocation() as { state?: { summary?: string; quizId?: number } };
+  const navigate = useNavigate();
   // Multi-select data
   const [allNotes, setAllNotes] = useState<Array<{ id: number; title: string }>>([]);
   const [allSummaries, setAllSummaries] = useState<Array<{ id: number; title: string }>>([]);
@@ -122,7 +144,6 @@ export default function Quiz() {
 
   // Prefill from quizId (resume) or from navigation summary / sessionStorage, and load lists
   useEffect(() => {
-    try {
       // Load lists
       (async () => {
         try {
@@ -132,13 +153,15 @@ export default function Quiz() {
           ]);
           if (nRes.ok) {
             const n = await nRes.json();
-            setAllNotes(((n?.items as any[]) || []).map(x => ({ id: x.id, title: x.title })));
+            setAllNotes(((n?.items as ComboOption[]) || []).map(x => ({ id: x.id, title: x.title })));
           }
           if (sRes.ok) {
             const s = await sRes.json();
-            setAllSummaries(((s?.items as any[]) || []).map(x => ({ id: x.id, title: x.title })));
+            setAllSummaries(((s?.items as ComboOption[]) || []).map(x => ({ id: x.id, title: x.title })));
           }
-        } catch {}
+        } catch (e) {
+          console.warn("Failed to load notes/summaries list", e);
+        }
       })();
 
       const qid = location.state?.quizId;
@@ -148,9 +171,11 @@ export default function Quiz() {
           setLoading(true);
           try {
             const res = await fetch(`/api/quizzes/${qid}`, { credentials: "include" });
-            const data = await res.json().catch(() => ({} as any));
+            const data: ResumeQuizResponse = await res
+              .json()
+              .catch(() => ({} as ResumeQuizResponse));
             if (!res.ok) {
-              setError((data as any)?.error || `Failed to load quiz #${qid}`);
+              setError(data?.error || `Failed to load quiz #${qid}`);
               setLoading(false);
               return;
             }
@@ -169,8 +194,9 @@ export default function Quiz() {
             setIdx(nextIdx);
             setScore(Number(data?.score ?? 0));
             setLoading(false);
-          } catch (e: any) {
-            setError(e?.message || "Failed to load quiz");
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : "Failed to load quiz";
+            setError(msg);
             setLoading(false);
           }
         })();
@@ -182,7 +208,6 @@ export default function Quiz() {
         setStateSummaryContent(stateSummary);
         setSelectedSummaryIds((ids) => (ids.includes(-1) ? ids : [-1, ...ids])); // -1 denotes virtual "Provided Summary"
       }
-    } catch {}
   }, []);
 
   const disableSubmit = useMemo(() => {
@@ -206,15 +231,17 @@ export default function Quiz() {
       if (selectedNoteIds.length > 0 || selectedSummaryIds.length > 0) {
         const notePromises = selectedNoteIds.map(async (id) => {
           const r = await fetch(`/api/notes/${id}`, { credentials: "include" });
-          const j = await r.json().catch(() => ({} as any));
-          return (j?.title ? `# Note: ${j.title}\n` : "") + (j?.content || "");
+          const j = (await r.json().catch(() => ({}))) as unknown;
+          const { title, content } = parseContentResp(j);
+          return (title ? `# Note: ${title}\n` : "") + (content || "");
         });
         const realSummaryIds = selectedSummaryIds.filter((id) => id !== -1);
         const includeProvided = selectedSummaryIds.includes(-1) ? [stateSummaryContent] : [];
         const summaryPromises = realSummaryIds.map(async (id) => {
           const r = await fetch(`/api/summaries/${id}`, { credentials: "include" });
-          const j = await r.json().catch(() => ({} as any));
-          return (j?.title ? `# Summary: ${j.title}\n` : "") + (j?.content || "");
+          const j = (await r.json().catch(() => ({}))) as unknown;
+          const { title, content } = parseContentResp(j);
+          return (title ? `# Summary: ${title}\n` : "") + (content || "");
         });
         const parts = await Promise.all([...notePromises, ...summaryPromises]);
         combined = [...includeProvided, ...parts].filter(Boolean).join("\n\n").trim();
@@ -226,17 +253,21 @@ export default function Quiz() {
       credentials: "include",
       body: JSON.stringify({ summary: payloadSummary, size }),
     });
-      const data: (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string } = await res.json().catch(() => ({} as any));
+      const data = (await res
+        .json()
+        .catch(() => ({}))) as (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string };
       if (!res.ok) {
-        throw new Error((data as any)?.error || `Quiz generation failed (${res.status})`);
+        const msg = "error" in data && data.error ? data.error : `Quiz generation failed (${res.status})`;
+        throw new Error(msg);
       }
       const qs = (data as QuizResponse).questions || [];
       if (!qs.length) throw new Error("No questions returned");
-      setQuizId((data as any)?.quiz_id ?? null);
-      setQuestionIds(((data as any)?.question_ids as number[]) || []);
+      setQuizId("quiz_id" in data && typeof data.quiz_id === "number" ? data.quiz_id : null);
+      setQuestionIds("question_ids" in data && Array.isArray(data.question_ids) ? (data.question_ids as number[]) : []);
       setQuestions(qs);
-    } catch (e: any) {
-      setError(e?.message || "Quiz request failed");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Quiz request failed";
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -263,7 +294,9 @@ export default function Quiz() {
           user_answer: current.options[selected],
         }),
       });
-    } catch {}
+    } catch (e) {
+      console.warn("Failed to persist quiz answer", e);
+    }
   };
 
   const nextQuestion = () => {
@@ -286,9 +319,9 @@ export default function Quiz() {
         if (res.status === 204) {
           // Reload quiz from server after reset
           const getRes = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
-          const data = await getRes.json().catch(() => ({} as any));
-          if (getRes.ok) {
-            const serverQs = (data?.questions || []) as Array<{ id: number; question: string; options: string[]; correctIndex: number | null; }>;
+          const data = (await getRes.json().catch(() => ({}))) as unknown as ResumeQuizResponse | { error?: string };
+          if (getRes.ok && data && typeof data === "object" && "questions" in data) {
+            const serverQs = (data.questions || []) as Array<{ id: number; question: string; options: string[]; correctIndex: number | null; }>;
             const mapped: QuizQuestion[] = serverQs.map(q => ({ question: q.question, options: q.options || [], correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0 }));
             setQuestions(mapped.length ? mapped : null);
             setQuestionIds(serverQs.map(q => q.id));
@@ -296,15 +329,19 @@ export default function Quiz() {
             setSelected(null);
             setFeedback(null);
             setScore(0);
+          } else if (!getRes.ok) {
+            const msg = (data && "error" in data && data.error) ? data.error : "Failed to reload quiz after reset";
+            setError(msg);
           } else {
-            setError((data as any)?.error || "Failed to reload quiz after reset");
+            setError("Failed to reload quiz after reset");
           }
         } else {
-          const err = await res.json().catch(() => ({} as any));
-          setError(err?.error || "Failed to reset quiz");
+          const err = (await res.json().catch(() => ({}))) as unknown as { error?: string };
+          setError(err && err.error ? err.error : "Failed to reset quiz");
         }
-      } catch (e: any) {
-        setError(e?.message || "Failed to reset quiz");
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "Failed to reset quiz";
+        setError(msg);
       } finally {
         setLoading(false);
       }
@@ -319,109 +356,130 @@ export default function Quiz() {
   };
 
   return (
-    <div className="container mx-auto max-w-3xl p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Quiz Generator</h1>
-
-      {/* Form (multi-select sources) */}
-      {!questions && (
-        <div className="space-y-4">
-          <div className="grid md:grid-cols-2 gap-4">
-            <MultiCombo
-              label="Notes"
-              options={allNotes}
-              selectedIds={selectedNoteIds}
-              setSelectedIds={setSelectedNoteIds}
-            />
-            <MultiCombo
-              label="Summaries"
-              options={[
-                ...(stateSummaryContent ? [{ id: -1, title: "Provided Summary (from navigation)" }] : []),
-                ...allSummaries,
-              ]}
-              selectedIds={selectedSummaryIds}
-              setSelectedIds={setSelectedSummaryIds}
-            />
-          </div>
-
-          <label className="block">
-            <span className="font-medium">Quiz size</span>
-            <select
-              className="mt-2 p-2 border rounded"
-              value={size}
-              onChange={(e) => setSize(e.target.value as QuizSize)}
-            >
-              <option value="small">Small</option>
-              <option value="medium">Medium</option>
-              <option value="large">Large</option>
-              <option value="comprehensive">Comprehensive</option>
-            </select>
-          </label>
-
-          <button
-            onClick={requestQuiz}
-            disabled={loading || disableSubmit}
-            className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50"
-          >
-            {loading ? "Generating..." : "Generate Quiz"}
-          </button>
-          {error && <p className="text-red-600">{error}</p>}
+    <div className="relative min-h-screen overflow-hidden px-4 pt-24 pb-12">
+      <div className="container mx-auto max-w-3xl space-y-6 text-white">
+        <div className="text-center space-y-2">
+          <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-[#FFBB94] to-[#FB9590] text-transparent bg-clip-text">
+            Quiz Generator
+          </h1>
+          <p className="text-pink-100 mt-1">Create quizzes from your notes and summaries — AI-powered ✨</p>
         </div>
-      )}
 
-      {/* Quiz display */}
-      {questions && current && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="text-sm text-gray-600">Question {idx + 1} / {total}</div>
-            <div className="text-sm text-gray-600">Score: {score}</div>
-          </div>
-
-          <div className="text-lg font-medium">{current.question}</div>
-
-          <div className="space-y-2">
-            {current.options.map((opt, i) => (
-              <label key={i} className={`flex items-center gap-2 p-2 border rounded cursor-pointer ${selected === i ? "border-blue-600" : ""}`}>
-                <input
-                  type="radio"
-                  name="answer"
-                  checked={selected === i}
-                  onChange={() => setSelected(i)}
+        {!questions && (
+          <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
+            <CardHeader>
+              <CardTitle>Configure Quiz</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid md:grid-cols-2 gap-4">
+                <MultiCombo
+                  label="Notes"
+                  options={allNotes}
+                  selectedIds={selectedNoteIds}
+                  setSelectedIds={setSelectedNoteIds}
                 />
-                <span>{opt}</span>
-              </label>
-            ))}
-          </div>
-
-          {!feedback && (
-            <button
-              onClick={onSubmitAnswer}
-              disabled={selected == null}
-              className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50"
-            >
-              Submit Answer
-            </button>
-          )}
-
-          {feedback && (
-            <div className="space-y-3">
-              <div className={feedback === "correct" ? "text-green-600" : "text-red-600"}>
-                {feedback === "correct" ? "Correct!" : "Incorrect."}
+                <MultiCombo
+                  label="Summaries"
+                  options={[
+                    ...(stateSummaryContent ? [{ id: -1, title: "Provided Summary (from navigation)" }] : []),
+                    ...allSummaries,
+                  ]}
+                  selectedIds={selectedSummaryIds}
+                  setSelectedIds={setSelectedSummaryIds}
+                />
               </div>
-              {idx < (questions.length - 1) ? (
-                <button onClick={nextQuestion} className="px-4 py-2 bg-gray-800 text-white rounded">Next Question</button>
-              ) : (
-                <div className="space-x-2">
-                  <span className="font-medium">Finished!</span>
-                  <span>Final score: {score} / {questions.length}</span>
-                  <button onClick={restart} className="ml-3 px-3 py-1.5 bg-blue-600 text-white rounded">{quizId ? "Retry Quiz" : "New Quiz"}</button>
+
+              <label className="block">
+                <span className="font-medium">Quiz size</span>
+                <select
+                  className="mt-2 p-2 border rounded bg-[#4C1D3D]/60 text-white border-pink-700/40 focus:outline-none focus:ring-2 focus:ring-pink-400/40"
+                  value={size}
+                  onChange={(e) => setSize(e.target.value as QuizSize)}
+                >
+                  <option value="small">Small</option>
+                  <option value="medium">Medium</option>
+                  <option value="large">Large</option>
+                  <option value="comprehensive">Comprehensive</option>
+                </select>
+              </label>
+
+              <div className="flex items-center justify-between">
+                <Button onClick={() => navigate(-1)} className="bg-[#852E4E] hover:bg-[#A33757]">Back</Button>
+                <Button
+                  onClick={requestQuiz}
+                  disabled={loading || disableSubmit}
+                  className="bg-[#852E4E] hover:bg-[#A33757]"
+                >
+                  {loading ? "Generating..." : "Generate Quiz"}
+                </Button>
+              </div>
+              {error && <p className="text-sm text-red-300">{error}</p>}
+            </CardContent>
+          </Card>
+        )}
+
+        {questions && current && (
+          <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
+            <CardHeader>
+              <CardTitle>Quiz</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between text-sm text-pink-200">
+                <div>Question {idx + 1} / {total}</div>
+                <div>Score: {score}</div>
+              </div>
+
+              <div className="text-lg font-medium text-[#FFBB94]">{current.question}</div>
+
+              <div className="space-y-2">
+                {current.options.map((opt, i) => (
+                  <label
+                    key={i}
+                    className={`flex items-center gap-2 p-2 rounded cursor-pointer bg-[#852E4E]/30 border border-pink-700/30 ${selected === i ? "ring-2 ring-pink-400/40" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="answer"
+                      checked={selected === i}
+                      onChange={() => setSelected(i)}
+                    />
+                    <span className="text-white">{opt}</span>
+                  </label>
+                ))}
+              </div>
+
+              {!feedback && (
+                <Button
+                  onClick={onSubmitAnswer}
+                  disabled={selected == null}
+                  className="bg-[#852E4E] hover:bg-[#A33757]"
+                >
+                  Submit Answer
+                </Button>
+              )}
+
+              {feedback && (
+                <div className="space-y-3">
+                  <div className={feedback === "correct" ? "text-green-300" : "text-red-300"}>
+                    {feedback === "correct" ? "Correct!" : "Incorrect."}
+                  </div>
+                  {idx < (questions.length - 1) ? (
+                    <Button onClick={nextQuestion} className="bg-[#852E4E] hover:bg-[#A33757]">Next Question</Button>
+                  ) : (
+                    <div className="space-x-2">
+                      <span className="font-medium">Finished!</span>
+                      <span>Final score: {score} / {questions.length}</span>
+                      <Button onClick={restart} className="ml-3 bg-[#852E4E] hover:bg-[#A33757]">{quizId ? "Retry Quiz" : "New Quiz"}</Button>
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
-          )}
 
-          {error && <p className="text-red-600">{error}</p>}
-        </div>
-      )}
+              {error && <p className="text-sm text-red-300">{error}</p>}
+            </CardContent>
+          </Card>
+        )}
+      </div>
     </div>
   );
 }

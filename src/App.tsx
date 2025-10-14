@@ -19,6 +19,8 @@ import Summary from "./pages/Summary";
 import NotFound from "./pages/NotFound";
 import Quiz from "./pages/Quiz";
 import StudyGuide from "./pages/StudyGuide";
+import Flashcards from "./pages/Flashcards";
+import StudySet from "./pages/StudySet";
 
 const queryClient = new QueryClient();
 
@@ -77,6 +79,26 @@ const App = () => (
             />
 
             {/* Protected routes (with Navigation bar) */}
+            <Route
+              path="/flashcards"
+              element={
+                <SessionProtectedRoute>
+                  <ProtectedLayout>
+                    <Flashcards />
+                  </ProtectedLayout>
+                </SessionProtectedRoute>
+              }
+            />
+            <Route
+              path="/study-set/:sid"
+              element={
+                <SessionProtectedRoute>
+                  <ProtectedLayout>
+                    <StudySet />
+                  </ProtectedLayout>
+                </SessionProtectedRoute>
+              }
+            />
             <Route
               path="/study"
               element={

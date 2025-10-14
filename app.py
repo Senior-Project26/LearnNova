@@ -18,6 +18,8 @@ from werkzeug.utils import secure_filename
 
 # Third-Party: Environment & Configuration
 from dotenv import load_dotenv
+load_dotenv()
+
 
 # Third-Party: Google & AI
 from google import genai
@@ -80,12 +82,7 @@ except Exception as e:
 
 def get_connection():
     try:
-        return psycopg2.connect(
-            host="localhost",
-            database="learnnova",
-            user="postgres",
-            password=os.getenv("POSTGRES_PASSWORD", "")
-        )
+        return psycopg2.connect(os.getenv("DATABASE_URL"))
     except Exception as e:
         print("Database connection failed:", e, flush=True)
         return None
@@ -726,6 +723,105 @@ def generate_study_guide(text: str) -> str:
 
 
 # ============================================================================
+# UTILITY FUNCTIONS - FLASHCARD GENERATION
+# ============================================================================
+
+def estimate_flashcard_count(text: str) -> int:
+    """Heuristic to pick number of flashcards proportional to input size."""
+    t = estimate_tokens(text or "")
+    if t <= 0:
+        return 10
+    # Roughly 1 card per ~80 tokens, clamp to [10, 80]
+    return max(10, min(80, t // 50))
+
+
+def sanitize_katex(s: str) -> str:
+    """Fix common issues from LLM output that break KaTeX.
+    - Remove ASCII control chars (except \n, \t)
+    - Restore missing backslashes for common LaTeX commands like frac, binom, sqrt, sum, Greek letters, etc.
+    - Convert HTML entities &gt; &lt; back to literal > <
+    """
+    try:
+        if not isinstance(s, str):
+            return s
+        out = s
+        # 1) Remove problematic control characters (keep \n, \t)
+        out = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", out)
+        # 2) Replace HTML entities for inequalities
+        out = out.replace("&gt;", ">").replace("&lt;", "<")
+        # 3) Add missing backslashes for common LaTeX commands if not already escaped
+        cmds = [
+            "frac", "binom", "sqrt", "sum", "prod", "alpha", "beta", "gamma", "delta", "epsilon",
+            "theta", "lambda", "mu", "sigma", "pi", "phi", "omega", "Omega", "ldots", "cdot",
+            "times", "leq", "geq", "neq", "pm", "mp", "overline", "underline", "hat", "bar",
+        ]
+        pattern = r"(?<!\\)\b(" + "|".join(cmds) + r")\b"
+        out = re.sub(pattern, r"\\\1", out)
+        return out
+    except Exception:
+        return s
+
+
+def generate_flashcards_with_gemini(text: str, count: int) -> list[dict]:
+    """Ask Gemini for JSON list of {question, answer} pairs.
+    Ensures valid structure and trims to requested count.
+    """
+    schema_hint = [
+        {"question": "State the Binomial Theorem.", "answer": "For integers $n\\ge 0$, $(a+b)^n = \\sum_{k=0}^n \\binom{n}{k} a^{n-k} b^k$."}
+    ]
+    prompt = (
+        "Generate flashcards as a JSON array only (no prose, no markdown). "
+        f"Return exactly {count} items. Each item must be an object with 'question' and 'answer' strings. "
+        "Make answers 1-3 sentences and include key formulas/examples when useful. "
+        "If math is involved, write LaTeX delimited by $...$ (inline) or $$...$$ (block). "
+        "When writing math, use KaTeX/LaTeX syntax for exponents, square roots, fractions, summations, and Greek letters (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, \\alpha). Do not use the caret '^' for exponents, plain 'sqrt', ASCII fractions, or plain Greek names. "
+        "For inequalities, use the literal '>' and '<' characters, not HTML entities like &gt; or &lt;. "
+        "If chemistry is involved, use mhchem syntax like \\ce{H2O}, \\ce{Na+}. "
+        "Do not include citations, references, or meta commentary.\n\nCONTENT:\n" + (text or "")
+    )
+
+    try:
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": {
+                    "type": "array",
+                    "minItems": max(1, min(count, 80)),
+                    "maxItems": count,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string"},
+                            "answer": {"type": "string"},
+                        },
+                        "required": ["question", "answer"],
+                    },
+                },
+            },
+        )
+        raw = (getattr(resp, "text", None) or "").strip()
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = parse_json_lenient(raw or "[]")
+        items = data if isinstance(data, list) else (data.get("items") if isinstance(data, dict) else [])
+        flashcards: list[dict] = []
+        if isinstance(items, list):
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                flashcards.append({"question": it.get("question").strip(), "answer": it.get("answer").strip()})
+                if len(flashcards) >= count:
+                    break
+        return flashcards
+    except Exception as e:
+        print(e, flush=True)
+        return []
+
+
+# ============================================================================
 # ROUTES - AUTHENTICATION
 # ============================================================================
 
@@ -770,6 +866,178 @@ def firebase_login():
             conn.close()
     except Exception as e:
         return jsonify({"error": str(e)}), 401
+
+
+def ensure_study_guides_created_at(conn):
+    """Ensure study_guides table has created_at with default NOW()."""
+    cur = conn.cursor()
+    try:
+        cur.execute("ALTER TABLE study_guides ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        cur.close()
+
+
+def ensure_notes_created_at(conn):
+    """Ensure notes table has created_at with default NOW()."""
+    cur = conn.cursor()
+    try:
+        cur.execute("ALTER TABLE notes ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        cur.close()
+
+
+def ensure_summaries_created_at(conn):
+    """Ensure summaries table has created_at with default NOW()."""
+    cur = conn.cursor()
+    try:
+        cur.execute("ALTER TABLE summaries ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        cur.close()
+
+
+@app.get("/api/recent_sets")
+def list_recent_sets():
+    """Return recent study sets and study guides for the current user ordered by created_at DESC.
+    Output items: [{ type: 'study_set'|'study_guide', id, name?, title?, created_at }]
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        ensure_study_sets_table(conn)
+        ensure_study_guides_created_at(conn)
+        # Also ensure timestamps exist broadly
+        try:
+            ensure_notes_created_at(conn)
+            ensure_summaries_created_at(conn)
+        except Exception:
+            pass
+        cur = conn.cursor()
+        # study sets
+        try:
+            cur.execute(
+                "SELECT id, name, created_at FROM study_sets WHERE user_id = %s",
+                (user_id,),
+            )
+            ss_rows = cur.fetchall()
+        except Exception:
+            ss_rows = []
+        # study guides
+        try:
+            cur.execute(
+                "SELECT id, title, created_at FROM study_guides WHERE user_id = %s",
+                (user_id,),
+            )
+            sg_rows = cur.fetchall()
+        except Exception:
+            sg_rows = []
+        # notes
+        try:
+            cur.execute(
+                "SELECT id, title, created_at FROM notes WHERE user_id = %s",
+                (user_id,),
+            )
+            note_rows = cur.fetchall()
+        except Exception:
+            note_rows = []
+        # summaries
+        try:
+            cur.execute(
+                "SELECT id, title, created_at FROM summaries WHERE user_id = %s",
+                (user_id,),
+            )
+            sum_rows = cur.fetchall()
+        except Exception:
+            sum_rows = []
+        cur.close()
+        items = (
+            [
+                {"type": "study_set", "id": r[0], "name": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in ss_rows
+            ]
+            + [
+                {"type": "study_guide", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in sg_rows
+            ]
+            + [
+                {"type": "note", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in note_rows
+            ]
+            + [
+                {"type": "summary", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in sum_rows
+            ]
+        )
+        # Sort by created_at DESC, nulls last, and limit to top 5
+        items.sort(key=lambda x: (x.get("created_at") is None, x.get("created_at") or ""), reverse=True)
+        items = items[:5]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.get("/api/dashboard_recent_sets")
+def list_recent_dashboard_sets():
+    """Return only recent study sets and study guides for the current user ordered by created_at DESC.
+    Output items: [{ type: 'study_set'|'study_guide', id, name?, title?, created_at }], limited to 10.
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        ensure_study_sets_table(conn)
+        ensure_study_guides_created_at(conn)
+        cur = conn.cursor()
+        # study sets
+        cur.execute(
+            "SELECT id, name, created_at FROM study_sets WHERE user_id = %s",
+            (user_id,),
+        )
+        ss_rows = cur.fetchall()
+        # study guides
+        try:
+            cur.execute(
+                "SELECT id, title, created_at FROM study_guides WHERE user_id = %s",
+                (user_id,),
+            )
+            sg_rows = cur.fetchall()
+        except Exception:
+            sg_rows = []
+        cur.close()
+        items = (
+            [
+                {"type": "study_set", "id": r[0], "name": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in ss_rows
+            ]
+            + [
+                {"type": "study_guide", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in sg_rows
+            ]
+        )
+        items.sort(key=lambda x: (x.get("created_at") is None, x.get("created_at") or ""), reverse=True)
+        items = items[:10]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
 
 
 @app.route("/api/login", methods=["POST"])
@@ -846,6 +1114,37 @@ def signup():
         conn.close()
 
 
+@app.patch("/api/study_sets/<int:sid>")
+def update_study_set(sid: int):
+    """Update properties of a study set (currently only name) for the current user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    new_name = str(data.get("name") or "").strip()
+    if not new_name:
+        return jsonify(error="name is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        ensure_study_sets_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM study_sets WHERE id = %s AND user_id = %s", (sid, user_id))
+        row = cur.fetchone()
+        if not row:
+            return jsonify(error="not found"), 404
+        cur.execute("UPDATE study_sets SET name = %s WHERE id = %s", (new_name, sid))
+        conn.commit()
+        cur.close()
+        return jsonify(id=sid, name=new_name), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
 # ============================================================================
 # ROUTES - COURSES
 # ============================================================================
@@ -904,6 +1203,312 @@ def list_courses():
             for r in rows
         ]
         return jsonify(courses=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+# ============================================================================
+# ROUTES - STUDY SETS
+# ============================================================================
+
+def ensure_study_sets_table(conn):
+    """Create study_sets table if it doesn't already exist."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS study_sets (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            course_id INTEGER NULL,
+            user_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE SET NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """
+    )
+    # Ensure cards column exists (array of cards as JSON objects {question, answer, title?})
+    try:
+        cur.execute("ALTER TABLE study_sets ADD COLUMN IF NOT EXISTS cards JSONB NOT NULL DEFAULT '[]'::jsonb")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    conn.commit()
+    cur.close()
+
+
+@app.post("/api/study_sets")
+def create_study_set():
+    """Create a study set for the current user. Body: { name, course_id? }"""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    course_id = data.get("course_id")
+    cards = data.get("cards")
+    if not name:
+        return jsonify(error="name is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        ensure_study_sets_table(conn)
+        cur = conn.cursor()
+        # Validate cards if provided (store only question/answer)
+        norm_cards = []
+        if isinstance(cards, list):
+            for c in cards:
+                try:
+                    q = str((c or {}).get("question", "")).strip()
+                    a = str((c or {}).get("answer", "")).strip()
+                    if q or a:
+                        norm_cards.append({"question": q, "answer": a})
+                except Exception:
+                    continue
+        cur.execute(
+            """
+            INSERT INTO study_sets (name, course_id, user_id, cards)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (name, course_id, user_id, json.dumps(norm_cards)),
+        )
+        sid, created_at = cur.fetchone()
+        conn.commit()
+        cur.close()
+        return jsonify(id=sid, name=name, course_id=course_id, created_at=(created_at.isoformat() if created_at else None), cards=norm_cards), 201
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.get("/api/study_sets")
+def list_study_sets():
+    """List study sets for the current user. Optional query: course_id=..."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    course_id = request.args.get("course_id", type=int)
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        ensure_study_sets_table(conn)
+        cur = conn.cursor()
+        if course_id is not None:
+            cur.execute(
+                "SELECT id, name, course_id, created_at, cards FROM study_sets WHERE user_id = %s AND course_id = %s ORDER BY id ASC",
+                (user_id, course_id),
+            )
+        else:
+            cur.execute(
+                "SELECT id, name, course_id, created_at, cards FROM study_sets WHERE user_id = %s ORDER BY id ASC",
+                (user_id,),
+            )
+        rows = cur.fetchall()
+        cur.close()
+        items = [
+            {
+                "id": r[0],
+                "name": r[1],
+                "course_id": r[2],
+                "created_at": (r[3].isoformat() if r[3] else None),
+                "cards": r[4] or [],
+            }
+            for r in rows
+        ]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.post("/api/study_sets/<int:sid>/cards")
+def add_card_to_study_set(sid: int):
+    """Append a single card to a study set owned by the current user. Body: { question, answer, title? }"""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    question = str((data.get("question") or "").strip())
+    answer = str((data.get("answer") or "").strip())
+    if not (question or answer):
+        return jsonify(error="question or answer required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        ensure_study_sets_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT id, cards FROM study_sets WHERE id = %s AND user_id = %s", (sid, user_id))
+        row = cur.fetchone()
+        if not row:
+            return jsonify(error="not found"), 404
+        existing = row[1] or []
+        try:
+            if not isinstance(existing, list):
+                existing = []
+        except Exception:
+            existing = []
+        payload = {"question": question, "answer": answer}
+        existing.append(payload)
+        # Also refresh created_at to bubble this set to recent
+        cur.execute("UPDATE study_sets SET cards = %s, created_at = NOW() WHERE id = %s", (json.dumps(existing), sid))
+        conn.commit()
+        cur.close()
+        return jsonify(id=sid, added=payload, count=len(existing)), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.delete("/api/study_sets/<int:sid>/cards/<int:card_index>")
+def delete_card_from_study_set(sid: int, card_index: int):
+    """Delete a card by index from a study set owned by the current user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        ensure_study_sets_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT id, cards FROM study_sets WHERE id = %s AND user_id = %s", (sid, user_id))
+        row = cur.fetchone()
+        if not row:
+            return jsonify(error="not found"), 404
+        existing = row[1] or []
+        try:
+            if not isinstance(existing, list):
+                existing = []
+        except Exception:
+            existing = []
+        if not (0 <= card_index < len(existing)):
+            return jsonify(error="invalid index"), 400
+        # remove the item
+        del existing[card_index]
+        cur.execute("UPDATE study_sets SET cards = %s WHERE id = %s", (json.dumps(existing), sid))
+        conn.commit()
+        cur.close()
+        return ("", 204)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.get("/api/study_sets/<int:sid>")
+def get_study_set(sid: int):
+    """Fetch a single study set by id for the current user, including cards."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        ensure_study_sets_table(conn)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, course_id, created_at, cards FROM study_sets WHERE id = %s AND user_id = %s",
+            (sid, user_id),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return jsonify(error="not found"), 404
+        sid_f, name, course_id, created_at, cards_json = row
+        try:
+            cards = json.loads(cards_json) if isinstance(cards_json, str) else (cards_json or [])
+        except Exception:
+            cards = []
+        return jsonify(id=sid_f, name=name, course_id=course_id, created_at=(created_at.isoformat() if created_at else None), cards=cards), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.delete("/api/study_sets/<int:sid>")
+def delete_study_set(sid: int):
+    """Delete a study set owned by the current user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM study_sets WHERE id = %s AND user_id = %s RETURNING id", (sid, user_id))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        return ("", 204)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# ROUTES - FLASHCARDS (AI GENERATION)
+# ============================================================================
+
+@app.post("/api/flashcards")
+def create_flashcards_from_text():
+    """Generate flashcards from input text using Gemini and save as a study set.
+    Body: { title: str, text: str, course_id?: int }
+    Returns: { id, name, cards }
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "Flashcards").strip()[:120]
+    text = (data.get("text") or "").strip()
+    course_id = data.get("course_id", None)
+    if not text:
+        return jsonify(error="missing text"), 400
+    try:
+        n = estimate_flashcard_count(text)
+        items = generate_flashcards_with_gemini(text, n)
+        if not items:
+            return jsonify(error="failed to generate flashcards"), 500
+        conn = get_connection()
+        if not conn:
+            return jsonify(error="Database connection error"), 500
+        try:
+            ensure_study_sets_table(conn)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO study_sets (name, course_id, user_id, cards)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (title or "Flashcards", course_id, user_id, json.dumps(items)),
+            )
+            sid = cur.fetchone()[0]
+            conn.commit()
+            cur.close()
+            return jsonify(id=sid, name=title or "Flashcards", cards=items), 200
+        except Exception as e:
+            conn.rollback()
+            return jsonify(error=str(e)), 500
+        finally:
+            conn.close()
     except Exception as e:
         return jsonify(error=str(e)), 500
 
@@ -1919,7 +2524,7 @@ def get_session_user():
 @app.errorhandler(404)
 def not_found(e):
     """Error handler for frontend routes."""
-    return jsonify({"error": "Not Found - handled by frontend"}), 404
+    return jsonify({"error": f"Not Found - {e}"}), 404
 
 
 # ============================================================================

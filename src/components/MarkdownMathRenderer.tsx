@@ -16,13 +16,23 @@ declare global {
 
 function ensureKatexLoaded(): Promise<void> {
   return new Promise((resolve) => {
-    if (window.katex?.renderToString) return resolve();
+    const done = () => resolve();
+    const loadMhchem = () => {
+      const existingMh = document.querySelector<HTMLScriptElement>("script[data-katex-mhchem]");
+      if (existingMh) { existingMh.addEventListener("load", done); setTimeout(done, 50); return; }
+      const mh = document.createElement("script");
+      mh.src = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/mhchem.min.js";
+      mh.async = true;
+      mh.setAttribute("data-katex-mhchem", "true");
+      mh.onload = done;
+      mh.onerror = done;
+      document.body.appendChild(mh);
+    };
+
+    if (window.katex?.renderToString) { loadMhchem(); return; }
     const existing = document.querySelector<HTMLScriptElement>("script[data-katex]");
-    if (existing) {
-      existing.addEventListener("load", () => resolve());
-      setTimeout(() => resolve(), 50);
-      return;
-    }
+    if (existing) { existing.addEventListener("load", loadMhchem); setTimeout(loadMhchem, 50); return; }
+
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css";
@@ -32,8 +42,8 @@ function ensureKatexLoaded(): Promise<void> {
     script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js";
     script.async = true;
     script.setAttribute("data-katex", "true");
-    script.onload = () => resolve();
-    script.onerror = () => resolve();
+    script.onload = loadMhchem;
+    script.onerror = loadMhchem;
     document.body.appendChild(script);
   });
 }
@@ -72,6 +82,57 @@ function sanitizeKeepSupSub(html: string) {
   out = out.replace(/&lt;\/hr&gt;/gim, "");
   // Turn basic links [text](url) that slipped through
   out = out.replace(/\[([^\]]+)\]\((https?:[^\)]+)\)/g, (_m, t, u) => `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(t)}</a>`);
+  return out;
+}
+
+// Mask math segments so markdown emphasis doesn't modify underscores inside math.
+function maskMath(src: string): { text: string; items: { ph: string; expr: string; display: boolean }[] } {
+  let text = src;
+  const items: { ph: string; expr: string; display: boolean }[] = [];
+  const take = (expr: string, display: boolean) => {
+    // Use markdown-safe placeholder that won't be affected by italic/bold rules
+    const ph = `@@MATH${items.length}@@`;
+    items.push({ ph, expr, display });
+    return ph;
+  };
+  // Process block math $$...$$ first
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_m, g1) => take(String(g1), true));
+  // Process \[ ... \] block
+  text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_m, g1) => take(String(g1), true));
+  // Process inline math $...$ (avoid capturing empty / nested dollars)
+  text = text.replace(/\$([^\n$][^$]*?)\$/g, (_m, g1) => take(String(g1), false));
+  // Process \( ... \) inline
+  text = text.replace(/\\\(([^\n]*?)\\\)/g, (_m, g1) => take(String(g1), false));
+  return { text, items };
+}
+
+function unmaskMath(html: string, items: { ph: string; expr: string; display: boolean }[], ready: boolean): string {
+  let out = html;
+  for (const it of items) {
+    try {
+      if (ready && window.katex?.renderToString) {
+        const cleaned = String(it.expr).trim()
+          .replace(/(?<!\\)#/g, "\\#")
+          .replace(/(?<!\\)%/g, "\\%")
+          .replace(/(?<!\\)&/g, "\\&");
+        const rendered = window.katex!.renderToString(cleaned, {
+          displayMode: it.display,
+          throwOnError: false,
+          strict: "ignore",
+        });
+        out = out.split(it.ph).join(rendered);
+      } else {
+        // Fallback: show the original delimiters visibly (escaped to avoid HTML injection)
+        const delim = it.display ? "$$" : "$";
+        const fallback = esc(delim + String(it.expr) + delim);
+        out = out.split(it.ph).join(fallback);
+      }
+    } catch {
+      const delim = it.display ? "$$" : "$";
+      const fallback = esc(delim + String(it.expr) + delim);
+      out = out.split(it.ph).join(fallback);
+    }
+  }
   return out;
 }
 
@@ -162,26 +223,14 @@ export default function MarkdownMathRenderer({ text }: Props) {
       })
       .join("\n");
 
-    // First, convert markdown to basic HTML (escaped), then allow a small set
-    let html1 = mdToHtml(normalized);
+    // Mask math before markdown so underscores inside math aren't italicized
+    const masked = maskMath(normalized);
+    // Convert markdown to basic HTML (escaped), then allow a small set
+    const html1 = mdToHtml(masked.text);
     let html2 = sanitizeKeepSupSub(html1);
-
-    // Render math: $$...$$ blocks then $...$ inline on the HTML string
-    const renderBlock = /\$\$([\s\S]*?)\$\$/g;
-    const renderInline = /\$([^\n$][^$]*?)\$/g;
-
-    if (ready && window.katex?.renderToString) {
-      html2 = html2.replace(renderBlock, (_m, expr) => {
-        try { return window.katex!.renderToString(String(expr).trim(), { displayMode: true, throwOnError: false, strict: "ignore" }); }
-        catch { return esc(_m); }
-      });
-      html2 = html2.replace(renderInline, (_m, expr) => {
-        try { return window.katex!.renderToString(String(expr).trim(), { displayMode: false, throwOnError: false, strict: "ignore" }); }
-        catch { return esc(_m); }
-      });
-    }
-
-    return html2;
+    // Unmask and render math (KaTeX if ready, otherwise safe fallback)
+    const finalHtml = unmaskMath(html2, masked.items, ready);
+    return finalHtml;
   }, [text, ready]);
 
   return (
