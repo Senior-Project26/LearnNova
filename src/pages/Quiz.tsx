@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 
 // Types
 type QuizSize = "small" | "medium" | "large" | "comprehensive";
@@ -429,7 +430,9 @@ export default function Quiz() {
                 <div>Score: {score}</div>
               </div>
 
-              <div className="text-lg font-medium text-[#FFBB94]">{current.question}</div>
+              <div className="text-lg font-medium text-[#FFBB94]">
+                <MarkdownMathRenderer text={current.question} />
+              </div>
 
               <div className="space-y-2">
                 {current.options.map((opt, i) => (
@@ -443,7 +446,9 @@ export default function Quiz() {
                       checked={selected === i}
                       onChange={() => setSelected(i)}
                     />
-                    <span className="text-white">{opt}</span>
+                    <div className="text-white">
+                      <MarkdownMathRenderer text={opt} />
+                    </div>
                   </label>
                 ))}
               </div>

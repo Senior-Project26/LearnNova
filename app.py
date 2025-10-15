@@ -566,25 +566,37 @@ def to_index_from_answer(ans: str | int | None, options: list[str]) -> int | Non
 
 def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
     """Generate quiz questions using Gemini."""
-    schema_example = {
-        "questions": [
-            {
-                "question": "...",
-                "options": ["...", "...", "...", "..."],
-                "correctIndex": 0,
-            }
-        ]
-    }
     user_prompt = (
         "Create a multiple-choice quiz from the SUMMARY below. "
-        f"Number of questions: {count}. "
+        f"Return exactly {count} questions. "
         "Each question must have exactly 4 options and a single correctIndex (0..3). "
-        "Output strictly valid JSON matching this schema (no extra text):\n"
-        f"{schema_example}\n\nSUMMARY:\n{summary}"
+        "Return JSON only.\n\nSUMMARY:\n" + summary
     )
     resp = gemini_client.models.generate_content(
         model="gemini-2.5-flash-lite",
         contents=user_prompt,
+        config={
+            "response_mime_type": "application/json",
+            "response_schema": {
+                "type": "array",
+                "minItems": max(1, min(count, 80)),
+                "maxItems": count,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "options": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 4,
+                            "maxItems": 4,
+                        },
+                        "correctIndex": {"type": "integer", "minimum": 0, "maximum": 3},
+                    },
+                    "required": ["question", "options", "correctIndex"],
+                },
+            },
+        },
     )
     raw = (getattr(resp, "text", None) or "").strip()
     data = parse_json_lenient(raw or "{}")
@@ -640,14 +652,36 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
             break
     if not cleaned:
         retry_prompt = (
-            "Return STRICT JSON only, no markdown, matching this schema exactly: "
-            f"{schema_example}. Do not add any keys beyond 'questions', 'question', 'options', 'correctIndex'. "
-            f"Number of questions: {count}. SUMMARY:\n{summary}"
+            "Create a multiple-choice quiz as JSON only. "
+            f"Return exactly {count} questions. "
+            "Each question must have exactly 4 options and a single correctIndex (0..3).\n\nSUMMARY:\n" + summary
         )
         try:
             retry_resp = gemini_client.models.generate_content(
                 model="gemini-2.5-flash-lite",
                 contents=retry_prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": {
+                        "type": "array",
+                        "minItems": max(1, min(count, 80)),
+                        "maxItems": count,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": {"type": "string"},
+                                "options": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "minItems": 4,
+                                    "maxItems": 4,
+                                },
+                                "correctIndex": {"type": "integer", "minimum": 0, "maximum": 3},
+                            },
+                            "required": ["question", "options", "correctIndex"],
+                        },
+                    },
+                },
             )
             retry_raw = (getattr(retry_resp, "text", None) or "").strip()
             data = parse_json_lenient(retry_raw or "{}")
