@@ -33,7 +33,7 @@ const App = () => (
         <Router>
           <CosmicBackdrop />
           <Routes>
-            {/* Public routes */}
+            {/* Public routes without navbar */}
             <Route path="/" element={<Index />} />
             <Route path="/signin" element={<SignIn />} />
             <Route path="/signup" element={<SignUp />} />

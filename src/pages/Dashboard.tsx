@@ -2,7 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
+import { 
+  Brain, 
+  BookOpen, 
+  FileText, 
+  Trash2, 
+  Edit3, 
+  Play, 
+  RotateCcw, 
+  TrendingUp,
+  Clock,
+  CheckCircle2,
+  Sparkles
+} from "lucide-react";
 
 type QuizItem = { id: number; created_at: string | null; score: number; question_count: number; answered_count?: number; completed?: boolean; title?: string };
 type NoteItem = { id: number; title: string; updated_at: string | null };
@@ -129,28 +143,55 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="container mx-auto px-4 pt-24 pb-12">
-      {error && (
-        <div className="mb-4 text-sm text-red-600">{error}</div>
-      )}
-      <div className="grid gap-6 md:grid-cols-3">
+    <div className="min-h-screen">
+      <div className="container mx-auto px-4 pt-24 pb-12">
+        {/* Welcome Header */}
+        <div className="mb-8 text-center">
+          <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-[#FFBB94] to-[#FB9590] text-transparent bg-clip-text mb-2">
+            Welcome Back!
+          </h1>
+          <p className="text-pink-100 flex items-center justify-center gap-2">
+            <Sparkles className="h-4 w-4 text-[#FB9590]" />
+            Continue your learning journey
+          </p>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-4 bg-red-900/30 border border-red-700/50 rounded-lg text-sm text-red-200">{error}</div>
+        )}
+
+        <div className="grid gap-6 md:grid-cols-3">
         {/* Quizzes */}
-        <Card className="md:col-span-1">
+        <Card className="md:col-span-1 bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20 hover:shadow-2xl hover:shadow-pink-900/30 transition-all">
           <CardHeader>
-            <CardTitle>Quizzes</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <div className="p-2 bg-[#852E4E]/40 rounded-lg">
+                <Brain className="h-5 w-5 text-[#FB9590]" />
+              </div>
+              <span className="text-pink-100">Quizzes</span>
+              {quizzes && quizzes.length > 0 && (
+                <Badge variant="secondary" className="ml-auto bg-[#852E4E] text-[#FFBB94] border-none">{quizzes.length}</Badge>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {quizzes === null ? (
-              <p className="text-muted-foreground">Loading...</p>
+              <div className="flex items-center justify-center py-8">
+                <div className="animate-pulse text-pink-200">Loading...</div>
+              </div>
             ) : quizzes.length === 0 ? (
-              <p className="text-muted-foreground">Your quizzes will appear here.</p>
+              <div className="text-center py-8">
+                <Brain className="h-12 w-12 mx-auto text-pink-300/30 mb-3" />
+                <p className="text-pink-200">No quizzes yet</p>
+                <p className="text-sm text-pink-300/70">Create your first quiz to get started!</p>
+              </div>
             ) : (
-              <ul className="space-y-2">
+              <ul className="space-y-3">
                 {quizzes.map((q) => (
                   <li key={q.id}>
-                    <div className="w-full flex items-center justify-between text-sm px-2 py-1 rounded hover:bg-gray-100">
+                    <div className="group w-full flex flex-col gap-2 text-sm p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
                       <button
-                        className="text-left"
+                        className="text-left flex items-start gap-2 flex-1"
                         onClick={async () => {
                           // Open quiz modal: load details to get current title and progress
                           try {
@@ -167,31 +208,41 @@ const Dashboard = () => {
                           }
                         }}
                       >
-                        <span>{q.title?.trim() ? q.title : `Quiz #${q.id}`} · {q.question_count} Qs</span>
+                        <CheckCircle2 className={`h-4 w-4 mt-0.5 flex-shrink-0 ${q.completed ? 'text-green-400' : 'text-pink-300/30'}`} />
+                        <div className="flex-1">
+                          <div className="font-medium text-pink-100">{q.title?.trim() ? q.title : `Quiz #${q.id}`}</div>
+                          <div className="text-xs text-pink-300/70 mt-1">{q.question_count} Questions</div>
+                        </div>
                       </button>
-                      <div className="flex items-center gap-2">
-                        <span className="text-muted-foreground">Score: {q.score ?? 0}</span>
-                        {q.completed && (
+                      <div className="flex items-center justify-between gap-2 pl-6">
+                        <Badge variant={q.score >= 70 ? "default" : "secondary"} className={`text-xs ${q.score >= 70 ? 'bg-green-900/40 text-green-200 border-green-700/50' : 'bg-[#852E4E] text-[#FFBB94] border-pink-700/40'}`}>
+                          Score: {q.score ?? 0}%
+                        </Badge>
+                        <div className="flex items-center gap-1">
+                          {q.completed && (
+                            <button
+                              className="text-xs px-2 py-1 rounded-md bg-[#852E4E]/60 text-[#FFBB94] hover:bg-[#A33757] transition-colors flex items-center gap-1"
+                              onClick={async () => {
+                                try {
+                                  const res = await fetch(`/api/quizzes/${q.id}/reset`, { method: "POST", credentials: "include" });
+                                  if (res.status === 204) {
+                                    navigate("/quiz", { state: { quizId: q.id } });
+                                  }
+                                } catch {}
+                              }}
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              Retry
+                            </button>
+                          )}
                           <button
-                            className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200"
-                            onClick={async () => {
-                              try {
-                                const res = await fetch(`/api/quizzes/${q.id}/reset`, { method: "POST", credentials: "include" });
-                                if (res.status === 204) {
-                                  navigate("/quiz", { state: { quizId: q.id } });
-                                }
-                              } catch {}
-                            }}
+                            className="text-xs p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors"
+                            onClick={() => setConfirmDelete({ kind: "quiz", id: q.id, title: (q.title?.trim() ? q.title! : `Quiz #${q.id}`) })}
+                            title="Delete quiz"
                           >
-                            Retry
+                            <Trash2 className="h-3.5 w-3.5" />
                           </button>
-                        )}
-                        <button
-                          className="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200"
-                          onClick={() => setConfirmDelete({ kind: "quiz", id: q.id, title: (q.title?.trim() ? q.title! : `Quiz #${q.id}`) })}
-                        >
-                          Delete
-                        </button>
+                        </div>
                       </div>
                     </div>
                   </li>
@@ -202,30 +253,46 @@ const Dashboard = () => {
         </Card>
 
         {/* Notes */}
-        <Card className="md:col-span-1">
+        <Card className="md:col-span-1 bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20 hover:shadow-2xl hover:shadow-pink-900/30 transition-all">
           <CardHeader>
-            <CardTitle>Notes</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <div className="p-2 bg-[#852E4E]/40 rounded-lg">
+                <FileText className="h-5 w-5 text-[#FB9590]" />
+              </div>
+              <span className="text-pink-100">Notes</span>
+              {notes && notes.length > 0 && (
+                <Badge variant="secondary" className="ml-auto bg-[#852E4E] text-[#FFBB94] border-none">{notes.length}</Badge>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {notes === null ? (
-              <p className="text-muted-foreground">Loading...</p>
+              <div className="flex items-center justify-center py-8">
+                <div className="animate-pulse text-pink-200">Loading...</div>
+              </div>
             ) : notes.length === 0 ? (
-              <p className="text-muted-foreground">Your notes will appear here.</p>
+              <div className="text-center py-8">
+                <FileText className="h-12 w-12 mx-auto text-pink-300/30 mb-3" />
+                <p className="text-pink-200">No notes yet</p>
+                <p className="text-sm text-pink-300/70">Start taking notes from your materials!</p>
+              </div>
             ) : (
               <ul className="space-y-2">
                 {notes.map((n) => (
-                  <li key={n.id} className="flex items-center gap-2">
+                  <li key={n.id} className="group flex items-center gap-2 p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
+                    <Edit3 className="h-4 w-4 text-[#FB9590] flex-shrink-0" />
                     <button
-                      className="flex-1 text-left text-sm truncate px-2 py-1 rounded hover:bg-gray-100"
+                      className="flex-1 text-left text-sm truncate font-medium text-pink-100"
                       onClick={() => openNoteModal(n.id)}
                     >
                       {n.title || `Note #${n.id}`}
                     </button>
                     <button
-                      className="px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200"
+                      className="p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors opacity-0 group-hover:opacity-100"
                       onClick={() => setConfirmDelete({ kind: "note", id: n.id, title: n.title })}
+                      title="Delete note"
                     >
-                      Delete
+                      <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </li>
                 ))}
@@ -235,30 +302,46 @@ const Dashboard = () => {
         </Card>
 
         {/* Summaries */}
-        <Card className="md:col-span-1">
+        <Card className="md:col-span-1 bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20 hover:shadow-2xl hover:shadow-pink-900/30 transition-all">
           <CardHeader>
-            <CardTitle>Summaries</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <div className="p-2 bg-[#852E4E]/40 rounded-lg">
+                <BookOpen className="h-5 w-5 text-[#FB9590]" />
+              </div>
+              <span className="text-pink-100">Summaries</span>
+              {summaries && summaries.length > 0 && (
+                <Badge variant="secondary" className="ml-auto bg-[#852E4E] text-[#FFBB94] border-none">{summaries.length}</Badge>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {summaries === null ? (
-              <p className="text-muted-foreground">Loading...</p>
+              <div className="flex items-center justify-center py-8">
+                <div className="animate-pulse text-pink-200">Loading...</div>
+              </div>
             ) : summaries.length === 0 ? (
-              <p className="text-muted-foreground">Your summaries will appear here.</p>
+              <div className="text-center py-8">
+                <BookOpen className="h-12 w-12 mx-auto text-pink-300/30 mb-3" />
+                <p className="text-pink-200">No summaries yet</p>
+                <p className="text-sm text-pink-300/70">Upload content to generate summaries!</p>
+              </div>
             ) : (
               <ul className="space-y-2">
                 {summaries.map((s) => (
-                  <li key={s.id} className="flex items-center gap-2">
+                  <li key={s.id} className="group flex items-center gap-2 p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
+                    <Sparkles className="h-4 w-4 text-[#FB9590] flex-shrink-0" />
                     <button
-                      className="flex-1 text-left text-sm truncate px-2 py-1 rounded hover:bg-gray-100"
+                      className="flex-1 text-left text-sm truncate font-medium text-pink-100"
                       onClick={() => openSummaryModal(s.id)}
                     >
                       {s.title || `Summary #${s.id}`}
                     </button>
                     <button
-                      className="px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200"
+                      className="p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors opacity-0 group-hover:opacity-100"
                       onClick={() => setConfirmDelete({ kind: "summary", id: s.id, title: s.title })}
+                      title="Delete summary"
                     >
-                      Delete
+                      <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </li>
                 ))}
@@ -268,22 +351,37 @@ const Dashboard = () => {
         </Card>
 
         {/* Keep existing sections at the bottom spanning full width */}
-        <Card className="md:col-span-3">
+        <Card className="md:col-span-3 bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20 hover:shadow-2xl hover:shadow-pink-900/30 transition-all">
           <CardHeader>
-            <CardTitle className="text-2xl">Your Progress</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-2xl">
+              <div className="p-2 bg-[#852E4E]/40 rounded-lg">
+                <TrendingUp className="h-6 w-6 text-[#FB9590]" />
+              </div>
+              <span className="text-pink-100">Your Progress</span>
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-muted-foreground">Charts and recent activity will appear here.</p>
+            <div className="text-center py-12">
+              <TrendingUp className="h-16 w-16 mx-auto text-pink-300/20 mb-4" />
+              <p className="text-pink-200">Progress tracking coming soon!</p>
+              <p className="text-sm text-pink-300/70 mt-1">Charts and analytics will appear here</p>
+            </div>
           </CardContent>
         </Card>
-        <Card className="md:col-span-3">
+        <Card className="md:col-span-3 bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20 hover:shadow-2xl hover:shadow-pink-900/30 transition-all">
           <CardHeader>
-            <CardTitle>Recent Sets</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <div className="p-2 bg-[#852E4E]/40 rounded-lg">
+                <Clock className="h-5 w-5 text-[#FB9590]" />
+              </div>
+              <span className="text-pink-100">Recent Study Guides</span>
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <RecentStudyGuides />
           </CardContent>
         </Card>
+      </div>
       </div>
 
       {/* Summary Modal */}
@@ -516,13 +614,13 @@ export default Dashboard;
 
 // RecentStudyGuides subcomponent
 function RecentStudyGuides() {
-  const [items, setItems] = useState<Array<{ id: number; type: 'study_set'|'study_guide'; title?: string; name?: string; created_at?: string }>>([]);
+  const [items, setItems] = useState<Array<{ id: number; title: string }>>([]);
   const navigate = useNavigate();
 
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/dashboard_recent_sets', { credentials: 'include' });
+        const res = await fetch('/api/dashboard/study_guides', { credentials: 'include' });
         const j = await res.json().catch(() => ({} as any));
         if (res.ok && Array.isArray(j.items)) setItems(j.items);
       } catch {}
@@ -533,41 +631,48 @@ function RecentStudyGuides() {
     navigate('/study-guide', { state: { studyGuideId: id } });
   };
 
-  const openSet = (id: number) => {
-    navigate(`/study-set/${id}`);
-  };
-
   return (
     <div>
       {items.length === 0 ? (
-        <p className="text-muted-foreground">Your recent study sets and guides will appear here.</p>
+        <div className="text-center py-8">
+          <BookOpen className="h-12 w-12 mx-auto text-pink-300/30 mb-3" />
+          <p className="text-pink-200">No study guides yet</p>
+          <p className="text-sm text-pink-300/70">Create study guides from your materials!</p>
+        </div>
       ) : (
-        <ul className="divide-y">
-          {items.map(it => {
-            const when = it.created_at ? new Date(it.created_at).toLocaleString() : '';
-            const isSet = it.type === 'study_set';
-            const label = isSet ? (it.name || `Set #${it.id}`) : (it.title || `Guide #${it.id}`);
-            const onOpen = () => (isSet ? openSet(it.id) : openGuide(it.id));
-            return (
-              <li key={`${it.type}-${it.id}`} className="py-2 flex items-center justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <button className="flex-1 text-left hover:underline truncate" onClick={onOpen}>
-                    {label}
-                  </button>
-                  {when && <div className="text-xs text-muted-foreground">{when}</div>}
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs px-2 py-1 rounded border text-muted-foreground">
-                    {isSet ? 'Flashcards' : 'Study Guide'}
-                  </span>
-                </div>
-              </li>
-            );
-          })}
+        <ul className="space-y-2">
+          {items.map(it => (
+            <li key={it.id} className="group flex items-center gap-3 p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
+              <BookOpen className="h-4 w-4 text-[#FB9590] flex-shrink-0" />
+              <button className="flex-1 text-left font-medium text-pink-100 hover:text-[#FFBB94] transition-colors" onClick={() => openGuide(it.id)}>
+                {it.title || `Study Guide #${it.id}`}
+              </button>
+              <button
+                className="px-3 py-1.5 text-xs rounded-md border border-pink-700/40 bg-[#852E4E]/40 text-[#FFBB94] hover:bg-[#A33757] transition-colors flex items-center gap-1"
+                onClick={() => openGuide(it.id)}
+              >
+                <Play className="h-3 w-3" />
+                Open
+              </button>
+              <button
+                className="p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors opacity-0 group-hover:opacity-100"
+                onClick={async () => {
+                  if (!confirm('Delete this study guide?')) return;
+                  try {
+                    const res = await fetch(`/api/study_guides/${it.id}`, { method: 'DELETE', credentials: 'include' });
+                    if (res.status === 204) setItems(prev => prev.filter(x => x.id !== it.id));
+                  } catch {}
+                }}
+                title="Delete study guide"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </li>
+          ))}
         </ul>
       )}
 
-      {/* Viewing happens on the respective pages now */}
+      {/* Viewing happens on the Study Guide page now */}
     </div>
   );
 }
