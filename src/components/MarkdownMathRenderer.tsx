@@ -9,6 +9,9 @@ interface MarkdownMathRendererProps {
 }
 
 const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => {
+  // Convert single newlines into Markdown hard line breaks to preserve line wraps
+  // Keep paragraph breaks (double newlines) as-is
+  const withLineBreaks = (text || "").replace(/([^\n])\n(?!\n)/g, "$1  \n");
   return (
     <ReactMarkdown
       remarkPlugins={[remarkMath]}
@@ -36,7 +39,7 @@ const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => 
         },
       }}
     >
-      {text}
+      {withLineBreaks}
     </ReactMarkdown>
   );
 };

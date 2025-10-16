@@ -63,7 +63,7 @@ app.config.update(
 # ============================================================================
 
 # Initialize API clients (Study Buddy)
-vision_client = None  # lazy-initialized in vision_ocr_from_images()
+vision_client = vision.ImageAnnotatorClient()
 gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
@@ -85,12 +85,7 @@ except Exception as e:
 
 def get_connection():
     try:
-        return psycopg2.connect(
-            host="localhost",
-            database="learnnova",
-            user="postgres",
-            password=os.getenv("POSTGRES_PASSWORD", "")
-        )
+        return psycopg2.connect(os.getenv("DATABASE_URL"))
     except Exception as e:
         print("Database connection failed:", e, flush=True)
         return None
@@ -299,8 +294,8 @@ def vision_ocr_from_images(images: list[Image.Image] | bytes) -> tuple[str, floa
     return full_text, avg_conf
 
 
-def clean_ocr_with_gemini(text: str) -> str:
-    """Use Gemini Flash Lite to clean OCR artifacts."""
+def clean_text_with_gemini(text: str) -> str:
+    """Use Gemini Flash Lite to clean text artifacts (OCR or otherwise)."""
     t = (text or "").strip()
     if not t:
         return t
@@ -313,13 +308,13 @@ def clean_ocr_with_gemini(text: str) -> str:
         "Do not add commentary or extra sections; do not hallucinate new content."
     )
     prompt = (
-        "CLEAN AND FORMAT THIS OCR TEXT INTO READABLE NOTES.\n"
+        "CLEAN AND FORMAT THIS TEXT INTO READABLE NOTES.\n"
         "- Keep all original information.\n"
         "- Use section headers if present.\n"
         "- Normalize bullets to '- '.\n"
         "- Remove watermark lines like 'Made with Goodnotes'.\n"
         "- Remove table pipes and merge wrapped lines properly.\n\n"
-        f"OCR TEXT:\n{snippet}"
+        f"TEXT:\n{snippet}"
     )
     try:
         resp = gemini_client.models.generate_content(
@@ -330,7 +325,7 @@ def clean_ocr_with_gemini(text: str) -> str:
         print("Was not cleaned properly" if out == t else "Was cleaned properly", flush=True)
         return out or t
     except Exception as e:
-        print(f"Failed to clean OCR text: {e}", flush=True)
+        print(f"Failed to clean text: {e}", flush=True)
         return t
 
 
@@ -449,6 +444,7 @@ def extract_pdf_text(file_bytes: bytes) -> str:
     structured_text = (structured_text or "").strip()
     score_struct = ocr_quality_score(structured_text)
     vision_text = ""
+
     conf = 0.0
     try:
         pages = convert_from_bytes(file_bytes, dpi=300)
@@ -460,7 +456,7 @@ def extract_pdf_text(file_bytes: bytes) -> str:
     prefer_vision = (conf >= 0.55) or (score_vision >= score_struct + 0.05)
     chosen = vision_text if prefer_vision else structured_text
     if prefer_vision and chosen:
-        cleaned = clean_ocr_with_gemini(chosen)
+        cleaned = clean_text_with_gemini(chosen)
         return format_readable_text(cleaned)
     return format_readable_text(chosen)
 
@@ -581,15 +577,7 @@ def to_index_from_answer(ans: str | int | None, options: list[str]) -> int | Non
 
 def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
     """Generate quiz questions using Gemini."""
-    schema_example = {
-        "questions": [
-            {
-                "question": "...",
-                "options": ["...", "...", "...", "..."],
-                "correctIndex": 0,
-            }
-        ]
-    }
+
     user_prompt = (
         "Create a multiple-choice quiz from the SUMMARY below. "
         f"Return exactly {count} questions. "
@@ -597,7 +585,6 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         "Return JSON only.\n\nSUMMARY:\n" + summary
     )
     resp = gemini_client.models.generate_content(
-        model="gemini-2.5-flash-lite",
         model="gemini-2.5-flash-lite",
         contents=user_prompt,
         config={
@@ -2162,7 +2149,7 @@ def create_summary():
     if not user_id:
         return jsonify(error="unauthorized"), 401
     data = request.get_json(silent=True) or {}
-    title = (data.get("title") or "Summary").strip() or "Summary"
+    title = (data.get("title") or "").strip()
     content = (data.get("content") or "").strip()
     if not content:
         return jsonify(error="content is required"), 400
@@ -2171,6 +2158,14 @@ def create_summary():
         return jsonify(error="Database connection error"), 500
     try:
         cur = conn.cursor()
+        # If no title provided, compute a default like "Summary #<next>" for this user
+        if not title:
+            try:
+                cur.execute("SELECT COALESCE(MAX(id), 0) FROM summaries WHERE user_id = %s", (user_id,))
+                max_id = cur.fetchone()[0] or 0
+                title = f"Summary #{max_id + 1}"
+            except Exception:
+                title = "Summary"
         cur.execute(
             """
             INSERT INTO summaries (user_id, title, content)
@@ -2323,7 +2318,6 @@ def dashboard_notes():
             FROM notes
             WHERE user_id = %s
             ORDER BY updated_at DESC NULLS LAST, id DESC
-            LIMIT 10
             """,
             (user_id,),
         )
@@ -2369,7 +2363,6 @@ def dashboard_quizzes():
             WHERE q.created_by = %s
             GROUP BY q.id
             ORDER BY q.created_at DESC NULLS LAST, q.id DESC
-            LIMIT 10
             """,
             (user_id,),
         )
@@ -2417,51 +2410,12 @@ def dashboard_study_guides():
             FROM study_guides
             WHERE user_id = %s
             ORDER BY id DESC
-            LIMIT 5
             """,
             (user_id,),
         )
         rows = cur.fetchall()
         cur.close()
         items = [{"id": r[0], "title": r[1]} for r in rows]
-        return jsonify(items=items), 200
-    except Exception as e:
-        return jsonify(error=str(e)), 500
-    finally:
-        conn.close()
-
-
-@app.get("/api/dashboard/summaries")
-def dashboard_summaries():
-    """List recent summaries for the current session user."""
-    user_id = session.get("user_id")
-    if not user_id:
-        return jsonify(error="unauthorized"), 401
-    conn = get_connection()
-    if not conn:
-        return jsonify(error="Database connection error"), 500
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, title, created_at
-            FROM summaries
-            WHERE user_id = %s
-            ORDER BY created_at DESC NULLS LAST, id DESC
-            LIMIT 10
-            """,
-            (user_id,),
-        )
-        rows = cur.fetchall()
-        cur.close()
-        items = [
-            {
-                "id": r[0],
-                "title": r[1],
-                "created_at": (r[2].isoformat() if r[2] else None),
-            }
-            for r in rows
-        ]
         return jsonify(items=items), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
@@ -2513,12 +2467,16 @@ def upload():
             extracted_text = (extracted_text or "").strip()
             if (not extracted_text) or conf < 0.6 or ocr_quality_score(extracted_text) < 0.3:
                 return jsonify(error="OCR extraction quality too low. Try a higher-resolution image or clearer scan."), 400
+            # Clean OCR text for readability
+            extracted_text = format_readable_text(clean_text_with_gemini(extracted_text))
         elif mimetype == "text/plain" or filename.lower().endswith(".txt"):
             kind = "text"
             extracted_text = file_bytes.decode("utf-8", errors="ignore")
+            extracted_text = format_readable_text(clean_text_with_gemini(extracted_text))
         else:
             try:
                 extracted_text = file_bytes.decode("utf-8", errors="ignore")
+                extracted_text = format_readable_text(clean_text_with_gemini(extracted_text))
             except Exception:
                 extracted_text = ""
 

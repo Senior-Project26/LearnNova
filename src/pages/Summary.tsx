@@ -1,5 +1,7 @@
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, Link, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { FileText, Brain, BookOpen, Upload, Sparkles, AlertCircle } from "lucide-react";
 
 export default function Summary() {
@@ -170,16 +172,43 @@ export default function Summary() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="bg-[#852E4E]/20 p-6 rounded-lg border border-pink-700/30">
-                  <pre className="whitespace-pre-wrap text-pink-100 text-sm leading-relaxed">{summary}</pre>
+                <div className="bg-[#852E4E]/20 p-6 rounded-lg border border-pink-700/30 prose prose-invert max-w-none">
+                  <MarkdownMathRenderer text={summary || ""} />
+                </div>
+                <div className="mt-3 flex items-center gap-3">
+                  <input
+                    type="text"
+                    value={titleInput}
+                    onChange={(e) => setTitleInput(e.target.value)}
+                    placeholder={`Name your summary (defaults to Summary #${nextSummaryNumber ?? ""})`}
+                    className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-[#852E4E]/20 border border-pink-700/40 text-pink-100 placeholder-pink-300/50 focus:outline-none focus:ring-2 focus:ring-pink-600/40"
+                  />
+                  <button
+                    onClick={ensureSummarySaved}
+                    disabled={saving || !!savedSummaryId || !summary}
+                    className="px-4 py-2 bg-[#852E4E]/60 hover:bg-[#A33757] text-[#FFBB94] rounded-lg transition-colors disabled:opacity-60"
+                  >
+                    {savedSummaryId ? "Saved" : (saving ? "Saving…" : "Save Summary")}
+                  </button>
                 </div>
                 {result && (
                   <details className="mt-4">
                     <summary className="cursor-pointer text-pink-300/70 text-sm hover:text-pink-200 transition-colors">
                       View raw response
                     </summary>
-                    <div className="mt-3 bg-[#852E4E]/20 p-4 rounded-lg border border-pink-700/30">
-                      <pre className="whitespace-pre-wrap text-pink-200 text-xs">{JSON.stringify(result, null, 2)}</pre>
+                    <div className="mt-3 space-y-3">
+                      <div className="bg-[#852E4E]/20 p-4 rounded-lg border border-pink-700/30 prose prose-invert max-w-none">
+                        <MarkdownMathRenderer text={extractedText || "(no extracted text)"} />
+                      </div>
+                      {extractedText && (
+                        <button
+                          className="px-4 py-2 bg-[#852E4E]/60 hover:bg-[#A33757] text-[#FFBB94] rounded-lg transition-colors"
+                          disabled={saving || !!savedNoteId}
+                          onClick={ensureNoteSaved}
+                        >
+                          {savedNoteId ? "Saved" : (saving ? "Saving…" : "Save as Note")}
+                        </button>
+                      )}
                     </div>
                   </details>
                 )}
