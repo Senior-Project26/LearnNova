@@ -16,7 +16,7 @@ const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => 
     <ReactMarkdown
       remarkPlugins={[remarkMath]}
       rehypePlugins={[rehypeKatex]}
-      className="prose prose-sm max-w-none"
+      className="prose prose-invert prose-sm max-w-none"
       components={{
         // Customize rendering for specific elements if needed
         p: ({ children }) => <p className="mb-2">{children}</p>,
@@ -28,11 +28,11 @@ const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => 
         code: ({ className, children, ...props }) => {
           const isInline = !className;
           return isInline ? (
-            <code className="bg-gray-200 px-1 py-0.5 rounded text-sm" {...props}>
+            <code className="bg-[#852E4E]/40 border border-pink-700/40 text-pink-100 px-1 py-0.5 rounded text-sm" {...props}>
               {children}
             </code>
           ) : (
-            <code className={`${className} block bg-gray-100 p-2 rounded text-sm overflow-x-auto`} {...props}>
+            <code className={`${className} block bg-[#4C1D3D]/60 border border-pink-700/40 text-pink-100 p-2 rounded text-sm overflow-x-auto`} {...props}>
               {children}
             </code>
           );
