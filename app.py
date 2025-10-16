@@ -582,8 +582,12 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         "Create a multiple-choice quiz from the SUMMARY below. "
         f"Return exactly {count} questions. "
         "Each question must have exactly 4 options and a single correctIndex (0..3). "
-        "Return JSON only.\n\nSUMMARY:\n" + summary
+        "Return JSON only. "
+        "When using math, use LaTeX/KaTeX-safe syntax (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, Greek letters as \\alpha). "
+        "Use literal '>' and '<' characters (not &gt; or &lt;). "
+        "Do not include prose outside of JSON.\n\nSUMMARY:\n" + summary
     )
+
     resp = gemini_client.models.generate_content(
         model="gemini-2.5-flash-lite",
         contents=user_prompt,
@@ -659,14 +663,21 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
             continue
         if not question or any(not o for o in options):
             continue
-        cleaned.append({"question": question, "options": options, "correctIndex": ci})
+        cleaned.append({
+            "question": sanitize_katex(question),
+            "options": [sanitize_katex(o) for o in options],
+            "correctIndex": ci,
+        })
         if len(cleaned) >= count:
             break
     if not cleaned:
         retry_prompt = (
             "Create a multiple-choice quiz as JSON only. "
             f"Return exactly {count} questions. "
-            "Each question must have exactly 4 options and a single correctIndex (0..3).\n\nSUMMARY:\n" + summary
+            "Each question must have exactly 4 options and a single correctIndex (0..3). "
+            "When using math, use LaTeX/KaTeX-safe syntax (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, Greek letters as \\alpha). "
+            "Use literal '>' and '<' characters (not &gt; or &lt;). "
+            "Do not include prose outside of JSON.\n\nSUMMARY:\n" + summary
         )
         try:
             retry_resp = gemini_client.models.generate_content(
@@ -734,7 +745,11 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
                     continue
                 if not question or any(not o for o in options):
                     continue
-                cleaned.append({"question": question, "options": options, "correctIndex": ci})
+                cleaned.append({
+                    "question": sanitize_katex(question),
+                    "options": [sanitize_katex(o) for o in options],
+                    "correctIndex": ci,
+                })
                 if len(cleaned) >= count:
                     break
         except Exception:
@@ -763,7 +778,7 @@ def generate_study_guide(text: str) -> str:
             contents=prompt,
         )
         out = (getattr(resp, "text", None) or "").strip()
-        return out
+        return sanitize_katex(out)
     except Exception:
         return text
 
@@ -818,7 +833,7 @@ def generate_flashcards_with_gemini(text: str, count: int) -> list[dict]:
     prompt = (
         "Generate flashcards as a JSON array only (no prose, no markdown). "
         f"Return exactly {count} items. Each item must be an object with 'question' and 'answer' strings. "
-        "Make answers 1-3 sentences and include key formulas/examples when useful. "
+        "Keep answers brief and simple: aim for 1–2 short sentences and <= 200 characters. Avoid long derivations or full proofs; provide the key idea or formula only. "
         "If math is involved, write LaTeX delimited by $...$ (inline) or $$...$$ (block). "
         "When writing math, use KaTeX/LaTeX syntax for exponents, square roots, fractions, summations, and Greek letters (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, \\alpha). Do not use the caret '^' for exponents, plain 'sqrt', ASCII fractions, or plain Greek names. "
         "For inequalities, use the literal '>' and '<' characters, not HTML entities like &gt; or &lt;. "
@@ -858,7 +873,11 @@ def generate_flashcards_with_gemini(text: str, count: int) -> list[dict]:
             for it in items:
                 if not isinstance(it, dict):
                     continue
-                flashcards.append({"question": it.get("question").strip(), "answer": it.get("answer").strip()})
+                q = sanitize_katex(str(it.get("question") or "").strip())
+                a = sanitize_katex(str(it.get("answer") or "").strip())
+                if not q or not a:
+                    continue
+                flashcards.append({"question": q, "answer": a})
                 if len(flashcards) >= count:
                     break
         return flashcards

@@ -12,6 +12,17 @@ const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => 
   // Convert single newlines into Markdown hard line breaks to preserve line wraps
   // Keep paragraph breaks (double newlines) as-is
   const withLineBreaks = (text || "").replace(/([^\n])\n(?!\n)/g, "$1  \n");
+  const fixMathArrows = (s: string) => {
+    return s.replace(/(\${1,2})([\s\S]*?)\1/g, (_m, d: string, body: string) => {
+      let b = body;
+      // If preceded by \left, the intent is likely a bidirectional arrow
+      b = b.replace(/\\left\s*\\?ightarrow\b/g, "\\leftrightarrow");
+      b = b.replace(/\\?ightarrow\b/g, "\\rightarrow");
+      b = b.replace(/(^|[^\\])rightarrow\b/g, (_m2, pre: string) => pre + "\\rightarrow");
+      return d + b + d;
+    });
+  };
+  const normalized = fixMathArrows(withLineBreaks);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkMath]}
@@ -39,7 +50,7 @@ const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => 
         },
       }}
     >
-      {withLineBreaks}
+      {normalized}
     </ReactMarkdown>
   );
 };
