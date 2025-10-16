@@ -186,9 +186,10 @@ const Dashboard = () => {
                 <p className="text-sm text-pink-300/70">Create your first quiz to get started!</p>
               </div>
             ) : (
-              <ul className="space-y-3">
-                {quizzes.map((q) => (
-                  <li key={q.id}>
+              <div className={`${(quizzes?.length || 0) > 10 ? 'max-h-96 overflow-y-auto' : ''}`}>
+                <ul className="space-y-3">
+                  {quizzes.map((q) => (
+                    <li key={q.id}>
                     <div className="group w-full flex flex-col gap-2 text-sm p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
                       <button
                         className="text-left flex items-start gap-2 flex-1"
@@ -245,9 +246,10 @@ const Dashboard = () => {
                         </div>
                       </div>
                     </div>
-                  </li>
-                ))}
-              </ul>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -277,26 +279,28 @@ const Dashboard = () => {
                 <p className="text-sm text-pink-300/70">Start taking notes from your materials!</p>
               </div>
             ) : (
-              <ul className="space-y-2">
-                {notes.map((n) => (
-                  <li key={n.id} className="group flex items-center gap-2 p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
-                    <Edit3 className="h-4 w-4 text-[#FB9590] flex-shrink-0" />
-                    <button
-                      className="flex-1 text-left text-sm truncate font-medium text-pink-100"
-                      onClick={() => openNoteModal(n.id)}
-                    >
-                      {n.title || `Note #${n.id}`}
-                    </button>
-                    <button
-                      className="p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors opacity-0 group-hover:opacity-100"
-                      onClick={() => setConfirmDelete({ kind: "note", id: n.id, title: n.title })}
-                      title="Delete note"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <div className={`${(notes?.length || 0) > 10 ? 'max-h-96 overflow-y-auto' : ''}`}>
+                <ul className="space-y-2">
+                  {notes.map((n) => (
+                    <li key={n.id} className="group flex items-center gap-2 p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
+                      <Edit3 className="h-4 w-4 text-[#FB9590] flex-shrink-0" />
+                      <button
+                        className="flex-1 text-left text-sm truncate font-medium text-pink-100"
+                        onClick={() => openNoteModal(n.id)}
+                      >
+                        {n.title || `Note #${n.id}`}
+                      </button>
+                      <button
+                        className="p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors"
+                        onClick={() => setConfirmDelete({ kind: "note", id: n.id, title: n.title })}
+                        title="Delete note"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -376,7 +380,7 @@ const Dashboard = () => {
               <div className="p-2 bg-[#852E4E]/40 rounded-lg">
                 <Clock className="h-5 w-5 text-[#FB9590]" />
               </div>
-              <span className="text-pink-100">Recent Study Guides</span>
+              <span className="text-pink-100">Study Guides</span>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -642,36 +646,38 @@ function RecentStudyGuides() {
           <p className="text-sm text-pink-300/70">Create study guides from your materials!</p>
         </div>
       ) : (
-        <ul className="space-y-2">
-          {items.map(it => (
-            <li key={it.id} className="group flex items-center gap-3 p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
-              <BookOpen className="h-4 w-4 text-[#FB9590] flex-shrink-0" />
-              <button className="flex-1 text-left font-medium text-pink-100 hover:text-[#FFBB94] transition-colors" onClick={() => openGuide(it.id)}>
-                {it.title || `Study Guide #${it.id}`}
-              </button>
-              <button
-                className="px-3 py-1.5 text-xs rounded-md border border-pink-700/40 bg-[#852E4E]/40 text-[#FFBB94] hover:bg-[#A33757] transition-colors flex items-center gap-1"
-                onClick={() => openGuide(it.id)}
-              >
-                <Play className="h-3 w-3" />
-                Open
-              </button>
-              <button
-                className="p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors opacity-0 group-hover:opacity-100"
-                onClick={async () => {
-                  if (!confirm('Delete this study guide?')) return;
-                  try {
-                    const res = await fetch(`/api/study_guides/${it.id}`, { method: 'DELETE', credentials: 'include' });
-                    if (res.status === 204) setItems(prev => prev.filter(x => x.id !== it.id));
-                  } catch {}
-                }}
-                title="Delete study guide"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </li>
-          ))}
-        </ul>
+        <div className={`${(items.length) > 5 ? 'max-h-96 overflow-y-auto' : ''}`}>
+          <ul className="space-y-2">
+            {items.map(it => (
+              <li key={it.id} className="group flex items-center gap-3 p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
+                <BookOpen className="h-4 w-4 text-[#FB9590] flex-shrink-0" />
+                <button className="flex-1 text-left font-medium text-pink-100 hover:text-[#FFBB94] transition-colors" onClick={() => openGuide(it.id)}>
+                  {it.title || `Study Guide #${it.id}`}
+                </button>
+                <button
+                  className="px-3 py-1.5 text-xs rounded-md border border-pink-700/40 bg-[#852E4E]/40 text-[#FFBB94] hover:bg-[#A33757] transition-colors flex items-center gap-1"
+                  onClick={() => openGuide(it.id)}
+                >
+                  <Play className="h-3 w-3" />
+                  Open
+                </button>
+                <button
+                  className="p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors opacity-0 group-hover:opacity-100"
+                  onClick={async () => {
+                    if (!confirm('Delete this study guide?')) return;
+                    try {
+                      const res = await fetch(`/api/study_guides/${it.id}`, { method: 'DELETE', credentials: 'include' });
+                      if (res.status === 204) setItems(prev => prev.filter(x => x.id !== it.id));
+                    } catch {}
+                  }}
+                  title="Delete study guide"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {/* Viewing happens on the Study Guide page now */}
