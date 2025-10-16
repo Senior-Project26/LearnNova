@@ -146,6 +146,7 @@ export default function Quiz() {
 
   // Prefill from quizId (resume) or from navigation summary / sessionStorage, and load lists
   useEffect(() => {
+    try {
       // Load lists
       (async () => {
         try {
@@ -209,6 +210,9 @@ export default function Quiz() {
         setStateSummaryContent(stateSummary);
         setSelectedSummaryIds((ids) => (ids.includes(-1) ? ids : [-1, ...ids])); // -1 denotes virtual "Provided Summary"
       }
+    } catch (e) {
+      console.error("Error in useEffect:", e);
+    }
   }, []);
 
   const disableSubmit = useMemo(() => {
@@ -258,17 +262,15 @@ export default function Quiz() {
         .json()
         .catch(() => ({}))) as (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string };
       if (!res.ok) {
-        const msg = "error" in data && data.error ? data.error : `Quiz generation failed (${res.status})`;
-        throw new Error(msg);
+        throw new Error((data as any)?.error || `Quiz generation failed (${res.status})`);
       }
       const qs = (data as QuizResponse).questions || [];
       if (!qs.length) throw new Error("No questions returned");
       setQuizId("quiz_id" in data && typeof data.quiz_id === "number" ? data.quiz_id : null);
       setQuestionIds("question_ids" in data && Array.isArray(data.question_ids) ? (data.question_ids as number[]) : []);
       setQuestions(qs);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Quiz request failed";
-      setError(msg);
+    } catch (e: any) {
+      setError(e?.message || "Quiz request failed");
     } finally {
       setLoading(false);
     }
