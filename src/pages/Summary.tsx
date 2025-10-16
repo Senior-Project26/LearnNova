@@ -1,6 +1,6 @@
 import { useLocation, Link, useNavigate } from "react-router-dom";
-import { useEffect, useMemo, useState } from "react";
-import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FileText, Brain, BookOpen, Upload, Sparkles, AlertCircle } from "lucide-react";
 
 export default function Summary() {
   const location = useLocation() as { state?: { summary?: string; result?: any; extracted_text?: string } };
@@ -125,72 +125,107 @@ export default function Summary() {
   };
 
   return (
-    <div className="container mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-semibold mb-4">Summary</h1>
-      {!summary ? (
-        <div className="space-y-3">
-          <p>No summary data found. Please upload a file first.</p>
-          <Link className="text-blue-600 underline" to="/upload">Go to Upload</Link>
+    <div className="min-h-screen pb-12">
+      <div className="container mx-auto px-4 max-w-4xl">
+        {/* Header */}
+        <div className="mb-8 text-center">
+          <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-[#FFBB94] to-[#FB9590] text-transparent bg-clip-text mb-2">
+            Document Summary
+          </h1>
+          <p className="text-pink-100 flex items-center justify-center gap-2">
+            <Sparkles className="h-4 w-4 text-[#FB9590]" />
+            Your AI-generated summary is ready
+          </p>
         </div>
-      ) : (
-        <div className="space-y-6">
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={titleInput}
-              onChange={(e) => setTitleInput(e.target.value)}
-              className="w-full max-w-xl px-3 py-2 border rounded"
-              placeholder={`Title your ${showExtracted ? "Note" : "Summary"}. Defaults to '${showExtracted ? `Note #${nextNoteNumber ?? "?"}` : `Summary #${nextSummaryNumber ?? "?"}`}'`}
-            />
+
+        {!summary ? (
+          <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
+            <CardContent className="py-12">
+              <div className="text-center space-y-4">
+                <AlertCircle className="h-16 w-16 mx-auto text-pink-300/30" />
+                <div>
+                  <p className="text-pink-200 text-lg mb-2">No summary data found</p>
+                  <p className="text-pink-300/70 text-sm">Please upload a file first to generate a summary</p>
+                </div>
+                <Link 
+                  to="/upload"
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-[#DC586D] to-[#A33757] text-white rounded-xl font-medium shadow-lg hover:shadow-pink-900/30 transition-all hover:scale-[1.02]"
+                >
+                  <Upload className="h-5 w-5" />
+                  Go to Upload
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-6">
+            {/* Summary Card */}
+            <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <div className="p-2 bg-[#852E4E]/40 rounded-lg">
+                    <FileText className="h-5 w-5 text-[#FB9590]" />
+                  </div>
+                  <span className="text-pink-100">Summary Content</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="bg-[#852E4E]/20 p-6 rounded-lg border border-pink-700/30">
+                  <pre className="whitespace-pre-wrap text-pink-100 text-sm leading-relaxed">{summary}</pre>
+                </div>
+                {result && (
+                  <details className="mt-4">
+                    <summary className="cursor-pointer text-pink-300/70 text-sm hover:text-pink-200 transition-colors">
+                      View raw response
+                    </summary>
+                    <div className="mt-3 bg-[#852E4E]/20 p-4 rounded-lg border border-pink-700/30">
+                      <pre className="whitespace-pre-wrap text-pink-200 text-xs">{JSON.stringify(result, null, 2)}</pre>
+                    </div>
+                  </details>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Action Buttons */}
+            <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
+              <CardHeader>
+                <CardTitle className="text-pink-100">Next Steps</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <button 
+                    onClick={quizMe}
+                    className="flex items-center justify-center gap-3 p-4 bg-[#852E4E]/40 hover:bg-[#852E4E]/60 border border-pink-700/40 rounded-xl transition-all hover:shadow-lg hover:shadow-pink-900/20 group"
+                  >
+                    <Brain className="h-6 w-6 text-[#FFBB94] group-hover:scale-110 transition-transform" />
+                    <div className="text-left">
+                      <div className="font-semibold text-pink-100">Quiz Me!</div>
+                      <div className="text-xs text-pink-300/70">Test your knowledge</div>
+                    </div>
+                  </button>
+                  <button 
+                    onClick={studyGuide}
+                    className="flex items-center justify-center gap-3 p-4 bg-[#852E4E]/40 hover:bg-[#852E4E]/60 border border-pink-700/40 rounded-xl transition-all hover:shadow-lg hover:shadow-pink-900/20 group"
+                  >
+                    <BookOpen className="h-6 w-6 text-[#FFBB94] group-hover:scale-110 transition-transform" />
+                    <div className="text-left">
+                      <div className="font-semibold text-pink-100">Study Guide</div>
+                      <div className="text-xs text-pink-300/70">Create a guide</div>
+                    </div>
+                  </button>
+                </div>
+                <Link 
+                  to="/upload"
+                  className="mt-4 flex items-center justify-center gap-2 w-full px-6 py-3 bg-gradient-to-r from-[#DC586D] to-[#A33757] text-white rounded-xl font-medium shadow-lg hover:shadow-pink-900/30 transition-all hover:scale-[1.02]"
+                >
+                  <Upload className="h-5 w-5" />
+                  Upload Another File
+                </Link>
+              </CardContent>
+            </Card>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowExtracted((s) => !s)}
-              className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 rounded text-sm"
-            >
-              {showExtracted ? "Show Summary" : "Show Extracted Text"}
-            </button>
-          </div>
-          {showExtracted ? (
-            <div className="bg-gray-50 p-4 rounded border overflow-x-auto">
-              <MarkdownMathRenderer text={extractedText || "(no extracted text)"} />
-            </div>
-          ) : (
-            <div className="bg-gray-50 p-4 rounded border">
-              <MarkdownMathRenderer text={summary || ""} />
-            </div>
-          )}
-          {result && (
-            <details className="mt-4">
-              <summary className="cursor-pointer">View raw response</summary>
-              <pre className="whitespace-pre-wrap bg-gray-50 p-4 rounded border mt-2">{JSON.stringify(result, null, 2)}</pre>
-            </details>
-          )}
-          <div className="flex items-center gap-3 flex-wrap">
-            <button
-              onClick={showExtracted ? ensureNoteSaved : ensureSummarySaved}
-              disabled={(showExtracted ? !extractedText : !summary) || saving}
-              className="px-4 py-2 bg-blue-700 text-white rounded disabled:opacity-60"
-            >
-              {showExtracted
-                ? (savedNoteId ? "Saved" : "Save Notes")
-                : (savedSummaryId ? "Saved" : "Save Summary")}
-            </button>
-            <span className="text-sm text-muted-foreground">
-              If you select "Quiz Me!" or "Study Guide" your summary will automatically be saved if it hasn't been
-            </span>
-            <button onClick={quizMe} className="px-4 py-2 bg-green-600 text-white rounded">
-              Quiz Me!
-            </button>
-            <button onClick={studyGuide} className="px-4 py-2 bg-purple-600 text-white rounded">
-              Study Guide
-            </button>
-          </div>
-          <Link className="inline-block mt-4 px-4 py-2 bg-blue-600 text-white rounded" to="/upload">
-            Upload another file
-          </Link>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

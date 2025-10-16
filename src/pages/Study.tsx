@@ -1,7 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +23,8 @@ type StudySetListResponse = { items?: StudySetListItem[]; error?: string };
 type NoteOrSummary = { title?: string; content?: string; error?: string };
 
 const Study = () => {
+  const navigate = useNavigate();
+  
   // ---- STATE ----
   const navigate = useNavigate();
   const [studySets, setStudySets] = useState<Array<{ id: number; name: string; cardsCount: number; courseName?: string }>>([]);
@@ -264,21 +264,17 @@ const Study = () => {
               </CardHeader>
               <CardContent className="space-y-2">
                 {[
-                  { icon: <PenTool className="h-4 w-4 mr-2" />, label: "Create New Flashcards", navigateTo: "/flashcards", state: { mode: "create" } },
-                  { icon: <Sparkles className="h-4 w-4 mr-2" />, label: "Generate Flashcards (AI)", navigateTo: "/flashcards", state: { mode: "generate" } },
-                  { icon: <Brain className="h-4 w-4 mr-2" />, label: "Generate Quiz", navigateTo: "/quiz" },
-                  { icon: <FileUp className="h-4 w-4 mr-2" />, label: "Upload Notes or Book Excerpts", navigateTo: "/upload" },
-                  { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Create Study Guide", navigateTo: "/study-guide" },
+                  { icon: <PenTool className="h-4 w-4 mr-2" />, label: "Create New Flashcards", path: "/notes" },
+                  { icon: <Sparkles className="h-4 w-4 mr-2" />, label: "Generate Flashcards (AI)", path: "/upload" },
+                  { icon: <Brain className="h-4 w-4 mr-2" />, label: "Generate Quiz (AI)", path: "/quiz" },
+                  { icon: <FileUp className="h-4 w-4 mr-2" />, label: "Upload PDF Notes", path: "/upload" },
+                  { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Make Custom Quiz", path: "/quiz" },
                 ].map((action, index) => (
                   <Button
                     key={index}
-                    className="w-full justify-start transition-all font-medium bg-[#852E4E] hover:bg-[#A33757] text-white"
-                    onClick={() => {
-                      if ((action as { navigateTo?: string; state?: unknown }).navigateTo) {
-                        const { navigateTo, state } = action as { navigateTo?: string; state?: unknown };
-                        if (navigateTo) navigate(navigateTo, { state });
-                      }
-                    }}
+                    variant="ghost"
+                    onClick={() => navigate(action.path)}
+                    className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
                   >
                     {action.icon}
                     {action.label}

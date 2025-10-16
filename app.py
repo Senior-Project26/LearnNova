@@ -14,6 +14,7 @@ import unicodedata
 from flask import Flask, request, jsonify, session
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 # Third-Party: Environment & Configuration
@@ -24,6 +25,8 @@ load_dotenv()
 # Third-Party: Google & AI
 from google import genai
 from google.cloud import vision
+from google.auth.exceptions import DefaultCredentialsError
+from google import genai
 
 # Third-Party: Firebase
 import firebase_admin
@@ -60,7 +63,7 @@ app.config.update(
 # ============================================================================
 
 # Initialize API clients (Study Buddy)
-vision_client = vision.ImageAnnotatorClient()
+vision_client = None  # lazy-initialized in vision_ocr_from_images()
 gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
@@ -82,7 +85,12 @@ except Exception as e:
 
 def get_connection():
     try:
-        return psycopg2.connect(os.getenv("DATABASE_URL"))
+        return psycopg2.connect(
+            host="localhost",
+            database="learnnova",
+            user="postgres",
+            password=os.getenv("POSTGRES_PASSWORD", "")
+        )
     except Exception as e:
         print("Database connection failed:", e, flush=True)
         return None
@@ -259,10 +267,17 @@ def vision_ocr_from_images(images: list[Image.Image] | bytes) -> tuple[str, floa
                 continue
     texts: list[str] = []
     confidences: list[float] = []
+    # Lazy-initialize Google Vision client to avoid import-time failures
+    try:
+        client = vision.ImageAnnotatorClient()
+    except DefaultCredentialsError:
+        return "", 0.0
+    except Exception:
+        return "", 0.0
     for content in contents:
         try:
             vimg = vision.Image(content=content)
-            resp = vision_client.document_text_detection(image=vimg)
+            resp = client.document_text_detection(image=vimg)
             if resp.error.message:
                 continue
             txt = getattr(resp.full_text_annotation, "text", "") or ""
@@ -566,6 +581,15 @@ def to_index_from_answer(ans: str | int | None, options: list[str]) -> int | Non
 
 def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
     """Generate quiz questions using Gemini."""
+    schema_example = {
+        "questions": [
+            {
+                "question": "...",
+                "options": ["...", "...", "...", "..."],
+                "correctIndex": 0,
+            }
+        ]
+    }
     user_prompt = (
         "Create a multiple-choice quiz from the SUMMARY below. "
         f"Return exactly {count} questions. "
@@ -573,6 +597,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         "Return JSON only.\n\nSUMMARY:\n" + summary
     )
     resp = gemini_client.models.generate_content(
+        model="gemini-2.5-flash-lite",
         model="gemini-2.5-flash-lite",
         contents=user_prompt,
         config={
