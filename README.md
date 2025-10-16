@@ -6,7 +6,7 @@ LearnNova was created as a student project for CSC 4899 at Florida Southern Coll
 
 ## Features
 
-- **Note Summarization**: Upload PDFs/images/text; we extracat content (Vision OCR for images/PDF scans) and generate concise, sectioned summaries.
+- **Note Summarization**: Upload PDFs/images/text; we extract content (Vision OCR for images/PDF scans) and generate concise, sectioned summaries.
 - **Quiz Generation**: Create multiple-choice, true/false, and fill-in-the-blank quizzes from your summary. Supports multiple sizes.
 - **Study Guide Creation**: Expand your notes into structured bullet-point guides with definitions, axioms, formulas, and short examples.
 - **AI Study Assistant**: Planned assistant to answer questions and explain topics contextually from your notes.
@@ -99,7 +99,7 @@ This starts:
 ## Notes on OCR & Generation
 
 - If Vision credentials aren’t configured, image OCR will fail. PDFs with embedded text will still work through PDF parsing.
-- Summarization, quiz, and study guide generation use Gemini 2.5 Pro. Model output is parsed and validated server-side for stability.
+- Summarization, quiz, and study guide generation use Gemini 2.5 Flash-Lite. Model output is parsed and validated server-side for stability.
 
 ## Development Tips
 
@@ -118,4 +118,4 @@ This starts:
 ## Credits
 
 - LearnNova — built as a student project for CSC 4899 at Florida Southern College.
-- Google Cloud Vision for OCR; Gemini 2.5 Pro for generation.
+- Google Cloud Vision for OCR; Gemini 2.5 Flash-Lite for generation.
