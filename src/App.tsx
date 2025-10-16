@@ -31,13 +31,43 @@ const App = () => (
         <Router>
           <CosmicBackdrop />
           <Routes>
-            {/* Public routes */}
+            {/* Public routes without navbar */}
             <Route path="/" element={<Index />} />
             <Route path="/signin" element={<SignIn />} />
-            <Route path="/upload" element={<Upload />} />
-            <Route path="/summary" element={<Summary />} />
-            <Route path="/quiz" element={<Quiz />} />
-            <Route path="/study-guide" element={<StudyGuide />} />
+
+            {/* Public routes with navbar */}
+            <Route
+              path="/upload"
+              element={
+                <ProtectedLayout>
+                  <Upload />
+                </ProtectedLayout>
+              }
+            />
+            <Route
+              path="/summary"
+              element={
+                <ProtectedLayout>
+                  <Summary />
+                </ProtectedLayout>
+              }
+            />
+            <Route
+              path="/quiz"
+              element={
+                <ProtectedLayout>
+                  <Quiz />
+                </ProtectedLayout>
+              }
+            />
+            <Route
+              path="/study-guide"
+              element={
+                <ProtectedLayout>
+                  <StudyGuide />
+                </ProtectedLayout>
+              }
+            />
 
             {/* Protected routes (with Navigation bar) */}
             <Route

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +17,8 @@ import {
 } from "lucide-react";
 
 const Study = () => {
+  const navigate = useNavigate();
+  
   // ---- STATE ----
   const [studySets, setStudySets] = useState([
     {
@@ -184,15 +187,16 @@ const Study = () => {
               </CardHeader>
               <CardContent className="space-y-2">
                 {[
-                  { icon: <PenTool className="h-4 w-4 mr-2" />, label: "Create New Flashcards" },
-                  { icon: <Sparkles className="h-4 w-4 mr-2" />, label: "Generate Flashcards (AI)" },
-                  { icon: <Brain className="h-4 w-4 mr-2" />, label: "Generate Quiz (AI)" },
-                  { icon: <FileUp className="h-4 w-4 mr-2" />, label: "Upload PDF Notes" },
-                  { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Make Custom Quiz" },
+                  { icon: <PenTool className="h-4 w-4 mr-2" />, label: "Create New Flashcards", path: "/notes" },
+                  { icon: <Sparkles className="h-4 w-4 mr-2" />, label: "Generate Flashcards (AI)", path: "/upload" },
+                  { icon: <Brain className="h-4 w-4 mr-2" />, label: "Generate Quiz (AI)", path: "/quiz" },
+                  { icon: <FileUp className="h-4 w-4 mr-2" />, label: "Upload PDF Notes", path: "/upload" },
+                  { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Make Custom Quiz", path: "/quiz" },
                 ].map((action, index) => (
                   <Button
                     key={index}
                     variant="ghost"
+                    onClick={() => navigate(action.path)}
                     className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
                   >
                     {action.icon}
