@@ -276,7 +276,7 @@ const Study = () => {
                   className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
                 >
                   <Sparkles className="h-4 w-4 mr-2" />
-                  Generate Flashcards (AI)
+                  Generate Flashcards
                 </Button>
                 <Button
                   variant="ghost"
@@ -284,7 +284,7 @@ const Study = () => {
                   className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
                 >
                   <Brain className="h-4 w-4 mr-2" />
-                  Generate Quiz (AI)
+                  Generate Quiz
                 </Button>
                 <Button
                   variant="ghost"
@@ -292,15 +292,15 @@ const Study = () => {
                   className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
                 >
                   <FileUp className="h-4 w-4 mr-2" />
-                  Upload PDF Notes
+                  Upload Notes
                 </Button>
                 <Button
                   variant="ghost"
-                  onClick={() => navigate("/quiz")}
+                  onClick={() => navigate("/study-guide")}
                   className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
                 >
                   <FolderOpen className="h-4 w-4 mr-2" />
-                  Make Custom Quiz
+                  Generate Study Guide
                 </Button>
               </CardContent>
             </Card>
