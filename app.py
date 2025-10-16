@@ -1058,7 +1058,7 @@ def list_recent_sets():
 @app.get("/api/dashboard_recent_sets")
 def list_recent_dashboard_sets():
     """Return only recent study sets and study guides for the current user ordered by created_at DESC.
-    Output items: [{ type: 'study_set'|'study_guide', id, name?, title?, created_at }], limited to 10.
+    Output items: [{ type: 'study_set'|'study_guide', id, name?, title?, created_at }].
     """
     user_id = session.get("user_id")
     if not user_id:
@@ -1097,13 +1097,11 @@ def list_recent_dashboard_sets():
             ]
         )
         items.sort(key=lambda x: (x.get("created_at") is None, x.get("created_at") or ""), reverse=True)
-        items = items[:10]
         return jsonify(items=items), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
     finally:
         conn.close()
-
 
 @app.route("/api/login", methods=["POST"])
 def login():
