@@ -22,7 +22,7 @@ LearnNova was created as a student project for CSC 4899 at Florida Southern Coll
 - **Backend**: Flask API (Python)
 - **AI Services**:
   - Google Cloud Vision: OCR for PDFs/images
-  - Gemini 2.5 Pro (via `google-genai`): summarization, quizzes, study guides
+  - Gemini 2.5 Flash-Lite (via `google-genai`): summarization, quizzes, study guides
 - **Optional Auth/DB** (scaffolded): Firebase Admin + Postgres
 
 ## Prerequisites
