@@ -26,7 +26,6 @@ const Study = () => {
   const navigate = useNavigate();
   
   // ---- STATE ----
-  const navigate = useNavigate();
   const [studySets, setStudySets] = useState<Array<{ id: number; name: string; cardsCount: number; courseName?: string }>>([]);
   const [loadingSets, setLoadingSets] = useState(false);
   const [setsError, setSetsError] = useState<string | null>(null);

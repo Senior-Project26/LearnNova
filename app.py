@@ -598,7 +598,6 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
     )
     resp = gemini_client.models.generate_content(
         model="gemini-2.5-flash-lite",
-        model="gemini-2.5-flash-lite",
         contents=user_prompt,
         config={
             "response_mime_type": "application/json",
