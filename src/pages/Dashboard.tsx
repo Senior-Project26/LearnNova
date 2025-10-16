@@ -63,7 +63,7 @@ const Dashboard = () => {
         const [qRes, nRes, sRes] = await Promise.all([
           fetch("/api/dashboard/quizzes", { credentials: "include" }),
           fetch("/api/dashboard/notes", { credentials: "include" }),
-          fetch("/api/dashboard/summaries", { credentials: "include" }),
+          fetch("/api/all_summaries", { credentials: "include" }),
         ]);
         if (!mounted) return;
         if (qRes.status === 401 || nRes.status === 401 || sRes.status === 401) {
@@ -326,26 +326,28 @@ const Dashboard = () => {
                 <p className="text-sm text-pink-300/70">Upload content to generate summaries!</p>
               </div>
             ) : (
-              <ul className="space-y-2">
-                {summaries.map((s) => (
-                  <li key={s.id} className="group flex items-center gap-2 p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
-                    <Sparkles className="h-4 w-4 text-[#FB9590] flex-shrink-0" />
-                    <button
-                      className="flex-1 text-left text-sm truncate font-medium text-pink-100"
-                      onClick={() => openSummaryModal(s.id)}
-                    >
-                      {s.title || `Summary #${s.id}`}
-                    </button>
-                    <button
-                      className="p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors opacity-0 group-hover:opacity-100"
-                      onClick={() => setConfirmDelete({ kind: "summary", id: s.id, title: s.title })}
-                      title="Delete summary"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <div className={`${(summaries?.length || 0) > 10 ? 'max-h-96 overflow-y-auto' : ''}`}>
+                <ul className="space-y-2">
+                  {summaries.map((s) => (
+                    <li key={s.id} className="group flex items-center gap-2 p-3 rounded-lg border border-pink-700/30 bg-[#852E4E]/20 hover:bg-[#852E4E]/30 hover:shadow-lg hover:shadow-pink-900/20 transition-all">
+                      <Sparkles className="h-4 w-4 text-[#FB9590] flex-shrink-0" />
+                      <button
+                        className="flex-1 text-left text-sm truncate font-medium text-pink-100"
+                        onClick={() => openSummaryModal(s.id)}
+                      >
+                        {s.title || `Summary #${s.id}`}
+                      </button>
+                      <button
+                        className="p-1.5 rounded-md bg-red-900/40 text-red-300 hover:bg-red-900/60 transition-colors opacity-0 group-hover:opacity-100"
+                        onClick={() => setConfirmDelete({ kind: "summary", id: s.id, title: s.title })}
+                        title="Delete summary"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </CardContent>
         </Card>

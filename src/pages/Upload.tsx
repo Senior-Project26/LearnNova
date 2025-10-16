@@ -26,6 +26,31 @@ export default function Upload() {
 
   // Auth is session-based (Flask session). No localStorage user id.
   const [unauthorized, setUnauthorized] = useState(false);
+  // Drag-and-drop state
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragging) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const dropped = e.dataTransfer?.files?.[0] || null;
+    if (dropped) {
+      setFile(dropped);
+      setError(null);
+    }
+  };
 
   useEffect(() => {
     let mounted = true;

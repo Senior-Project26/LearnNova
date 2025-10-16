@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import {
   MessageSquare,
   BookOpen,
@@ -20,13 +21,11 @@ type RecentItem = { type: 'study_set' | 'study_guide' | 'note' | 'summary'; id: 
 type RecentResponse = { items?: RecentItem[]; error?: string };
 type StudySetListItem = { id: number; name?: string; course?: { name?: string }; cards?: unknown[]; cardsCount?: number };
 type StudySetListResponse = { items?: StudySetListItem[]; error?: string };
-type NoteOrSummary = { title?: string; content?: string; error?: string };
 
 const Study = () => {
   const navigate = useNavigate();
   
   // ---- STATE ----
-  const navigate = useNavigate();
   const [studySets, setStudySets] = useState<Array<{ id: number; name: string; cardsCount: number; courseName?: string }>>([]);
   const [loadingSets, setLoadingSets] = useState(false);
   const [setsError, setSetsError] = useState<string | null>(null);
@@ -263,23 +262,46 @@ const Study = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {[
-                  { icon: <PenTool className="h-4 w-4 mr-2" />, label: "Create New Flashcards", path: "/notes" },
-                  { icon: <Sparkles className="h-4 w-4 mr-2" />, label: "Generate Flashcards (AI)", path: "/upload" },
-                  { icon: <Brain className="h-4 w-4 mr-2" />, label: "Generate Quiz (AI)", path: "/quiz" },
-                  { icon: <FileUp className="h-4 w-4 mr-2" />, label: "Upload PDF Notes", path: "/upload" },
-                  { icon: <FolderOpen className="h-4 w-4 mr-2" />, label: "Make Custom Quiz", path: "/quiz" },
-                ].map((action, index) => (
-                  <Button
-                    key={index}
-                    variant="ghost"
-                    onClick={() => navigate(action.path)}
-                    className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
-                  >
-                    {action.icon}
-                    {action.label}
-                  </Button>
-                ))}
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate("/flashcards", { state: { mode: "create" } })}
+                  className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
+                >
+                  <PenTool className="h-4 w-4 mr-2" />
+                  Create New Flashcards
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate("/flashcards", { state: { mode: "generate" } })}
+                  className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
+                >
+                  <Sparkles className="h-4 w-4 mr-2" />
+                  Generate Flashcards (AI)
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate("/quiz")}
+                  className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
+                >
+                  <Brain className="h-4 w-4 mr-2" />
+                  Generate Quiz (AI)
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate("/upload")}
+                  className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
+                >
+                  <FileUp className="h-4 w-4 mr-2" />
+                  Upload PDF Notes
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate("/quiz")}
+                  className="w-full justify-start text-[#FFBB94] hover:bg-[#852E4E]/50 hover:text-[#FFBB94] transition-all font-medium"
+                >
+                  <FolderOpen className="h-4 w-4 mr-2" />
+                  Make Custom Quiz
+                </Button>
               </CardContent>
             </Card>
 

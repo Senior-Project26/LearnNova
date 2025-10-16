@@ -1,15 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-<<<<<<< HEAD
 import { useLocation, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
-=======
-import { useLocation } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Brain, CheckCircle2, XCircle, Sparkles, RotateCcw } from "lucide-react";
->>>>>>> profile-settings-update
 
 // Types
 type QuizSize = "small" | "medium" | "large" | "comprehensive";
@@ -24,7 +18,6 @@ type QuizResponse = {
   questions: QuizQuestion[];
 };
 
-<<<<<<< HEAD
 type ResumeQuizResponse = {
   questions?: Array<{ id: number; question: string; options: string[]; correctIndex: number | null }>;
   next_unanswered_index?: number;
@@ -44,8 +37,6 @@ function parseContentResp(u: unknown): ContentResp {
   return {};
 }
 
-=======
->>>>>>> profile-settings-update
 // Simple checkbox combobox for multi-select
 type ComboOption = { id: number; title: string };
 function MultiCombo({
@@ -76,19 +67,6 @@ function MultiCombo({
   const count = selectedIds.length;
   return (
     <div className="block relative">
-<<<<<<< HEAD
-      <span className="font-medium">{label}</span>
-      <button
-        type="button"
-        className="mt-2 w-full p-2 border rounded flex items-center justify-between"
-        onClick={() => setOpen(o => !o)}
-      >
-        <span>{count > 0 ? `${count} selected` : `Select ${label.toLowerCase()}`}</span>
-        <span className="text-gray-500">▾</span>
-      </button>
-      {open && (
-        <div className="absolute z-10 mt-1 w-full bg-white border rounded shadow-lg p-2">
-=======
       <span className="font-medium text-pink-100">{label}</span>
       <button
         type="button"
@@ -100,24 +78,16 @@ function MultiCombo({
       </button>
       {open && (
         <div className="absolute z-10 mt-1 w-full bg-[#4C1D3D] border border-pink-700/40 rounded-lg shadow-xl shadow-pink-900/20 p-3">
->>>>>>> profile-settings-update
           <div className="flex items-center gap-2 mb-2">
             <input
               type="text"
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search..."
-<<<<<<< HEAD
-              className="w-full px-2 py-1 border rounded"
-            />
-            <button
-              className="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200"
-=======
               className="w-full px-3 py-2 bg-[#852E4E]/40 border border-pink-700/40 rounded text-white placeholder-pink-300"
             />
             <button
               className="text-xs px-3 py-2 bg-[#852E4E] text-white rounded hover:bg-[#A33757] transition"
->>>>>>> profile-settings-update
               onClick={clearAll}
               type="button"
             >
@@ -127,32 +97,19 @@ function MultiCombo({
           <ul className="max-h-56 overflow-auto space-y-1">
             {filtered.map(opt => (
               <li key={opt.id}>
-<<<<<<< HEAD
-                <label className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50 cursor-pointer">
-=======
                 <label className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#852E4E]/50 cursor-pointer transition">
->>>>>>> profile-settings-update
                   <input
                     type="checkbox"
                     checked={selectedIds.includes(opt.id)}
                     onChange={() => toggle(opt.id)}
-<<<<<<< HEAD
-                  />
-                  <span className="text-sm truncate">{opt.title || `#${opt.id}`}</span>
-=======
                     className="accent-[#FB9590]"
                   />
                   <span className="text-sm truncate text-pink-100">{opt.title || `#${opt.id}`}</span>
->>>>>>> profile-settings-update
                 </label>
               </li>
             ))}
             {filtered.length === 0 && (
-<<<<<<< HEAD
-              <li className="text-xs text-gray-500 px-2 py-1">No matches</li>
-=======
               <li className="text-xs text-pink-300 px-3 py-2">No matches</li>
->>>>>>> profile-settings-update
             )}
           </ul>
         </div>
@@ -167,20 +124,13 @@ export default function Quiz() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const location = useLocation() as { state?: { summary?: string; quizId?: number } };
-<<<<<<< HEAD
   const navigate = useNavigate();
-=======
->>>>>>> profile-settings-update
   // Multi-select data
   const [allNotes, setAllNotes] = useState<Array<{ id: number; title: string }>>([]);
   const [allSummaries, setAllSummaries] = useState<Array<{ id: number; title: string }>>([]);
   const [selectedNoteIds, setSelectedNoteIds] = useState<number[]>([]);
   const [selectedSummaryIds, setSelectedSummaryIds] = useState<number[]>([]);
   const [stateSummaryContent, setStateSummaryContent] = useState<string>("");
-<<<<<<< HEAD
-
-=======
->>>>>>> profile-settings-update
 
   // Quiz runtime state
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
@@ -196,10 +146,6 @@ export default function Quiz() {
 
   // Prefill from quizId (resume) or from navigation summary / sessionStorage, and load lists
   useEffect(() => {
-<<<<<<< HEAD
-=======
-    try {
->>>>>>> profile-settings-update
       // Load lists
       (async () => {
         try {
@@ -209,7 +155,6 @@ export default function Quiz() {
           ]);
           if (nRes.ok) {
             const n = await nRes.json();
-<<<<<<< HEAD
             setAllNotes(((n?.items as ComboOption[]) || []).map(x => ({ id: x.id, title: x.title })));
           }
           if (sRes.ok) {
@@ -219,15 +164,6 @@ export default function Quiz() {
         } catch (e) {
           console.warn("Failed to load notes/summaries list", e);
         }
-=======
-            setAllNotes(((n?.items as any[]) || []).map(x => ({ id: x.id, title: x.title })));
-          }
-          if (sRes.ok) {
-            const s = await sRes.json();
-            setAllSummaries(((s?.items as any[]) || []).map(x => ({ id: x.id, title: x.title })));
-          }
-        } catch {}
->>>>>>> profile-settings-update
       })();
 
       const qid = location.state?.quizId;
@@ -237,17 +173,11 @@ export default function Quiz() {
           setLoading(true);
           try {
             const res = await fetch(`/api/quizzes/${qid}`, { credentials: "include" });
-<<<<<<< HEAD
             const data: ResumeQuizResponse = await res
               .json()
               .catch(() => ({} as ResumeQuizResponse));
             if (!res.ok) {
               setError(data?.error || `Failed to load quiz #${qid}`);
-=======
-            const data = await res.json().catch(() => ({} as any));
-            if (!res.ok) {
-              setError((data as any)?.error || `Failed to load quiz #${qid}`);
->>>>>>> profile-settings-update
               setLoading(false);
               return;
             }
@@ -266,14 +196,8 @@ export default function Quiz() {
             setIdx(nextIdx);
             setScore(Number(data?.score ?? 0));
             setLoading(false);
-<<<<<<< HEAD
-          } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : "Failed to load quiz";
-            setError(msg);
-=======
           } catch (e: any) {
             setError(e?.message || "Failed to load quiz");
->>>>>>> profile-settings-update
             setLoading(false);
           }
         })();
@@ -308,34 +232,23 @@ export default function Quiz() {
       if (selectedNoteIds.length > 0 || selectedSummaryIds.length > 0) {
         const notePromises = selectedNoteIds.map(async (id) => {
           const r = await fetch(`/api/notes/${id}`, { credentials: "include" });
-<<<<<<< HEAD
           const j = (await r.json().catch(() => ({}))) as unknown;
           const { title, content } = parseContentResp(j);
           return (title ? `# Note: ${title}\n` : "") + (content || "");
-=======
-          const j = await r.json().catch(() => ({} as any));
-          return (j?.title ? `# Note: ${j.title}\n` : "") + (j?.content || "");
->>>>>>> profile-settings-update
         });
         const realSummaryIds = selectedSummaryIds.filter((id) => id !== -1);
         const includeProvided = selectedSummaryIds.includes(-1) ? [stateSummaryContent] : [];
         const summaryPromises = realSummaryIds.map(async (id) => {
           const r = await fetch(`/api/summaries/${id}`, { credentials: "include" });
-<<<<<<< HEAD
           const j = (await r.json().catch(() => ({}))) as unknown;
           const { title, content } = parseContentResp(j);
           return (title ? `# Summary: ${title}\n` : "") + (content || "");
-=======
-          const j = await r.json().catch(() => ({} as any));
-          return (j?.title ? `# Summary: ${j.title}\n` : "") + (j?.content || "");
->>>>>>> profile-settings-update
         });
         const parts = await Promise.all([...notePromises, ...summaryPromises]);
         combined = [...includeProvided, ...parts].filter(Boolean).join("\n\n").trim();
       }
       const payloadSummary = combined.trim();
       const res = await fetch("/api/quiz", {
-<<<<<<< HEAD
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -344,27 +257,14 @@ export default function Quiz() {
       const data = (await res
         .json()
         .catch(() => ({}))) as (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string };
-=======
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ summary: payloadSummary, size }),
-      });
-      const data: (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string } = await res.json().catch(() => ({} as any));
->>>>>>> profile-settings-update
       if (!res.ok) {
         const msg = "error" in data && data.error ? data.error : `Quiz generation failed (${res.status})`;
         throw new Error(msg);
       }
       const qs = (data as QuizResponse).questions || [];
       if (!qs.length) throw new Error("No questions returned");
-<<<<<<< HEAD
       setQuizId("quiz_id" in data && typeof data.quiz_id === "number" ? data.quiz_id : null);
       setQuestionIds("question_ids" in data && Array.isArray(data.question_ids) ? (data.question_ids as number[]) : []);
-=======
-      setQuizId((data as any)?.quiz_id ?? null);
-      setQuestionIds(((data as any)?.question_ids as number[]) || []);
->>>>>>> profile-settings-update
       setQuestions(qs);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Quiz request failed";
@@ -374,10 +274,6 @@ export default function Quiz() {
     }
   };
 
-<<<<<<< HEAD
-
-=======
->>>>>>> profile-settings-update
   const onSubmitAnswer = async () => {
     if (selected == null || !current) return;
     const correct = selected === current.correctIndex;
@@ -398,13 +294,9 @@ export default function Quiz() {
           user_answer: current.options[selected],
         }),
       });
-<<<<<<< HEAD
     } catch (e) {
       console.warn("Failed to persist quiz answer", e);
     }
-=======
-    } catch {}
->>>>>>> profile-settings-update
   };
 
   const nextQuestion = () => {
@@ -427,15 +319,9 @@ export default function Quiz() {
         if (res.status === 204) {
           // Reload quiz from server after reset
           const getRes = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
-<<<<<<< HEAD
           const data = (await getRes.json().catch(() => ({}))) as unknown as ResumeQuizResponse | { error?: string };
           if (getRes.ok && data && typeof data === "object" && "questions" in data) {
             const serverQs = (data.questions || []) as Array<{ id: number; question: string; options: string[]; correctIndex: number | null; }>;
-=======
-          const data = await getRes.json().catch(() => ({} as any));
-          if (getRes.ok) {
-            const serverQs = (data?.questions || []) as Array<{ id: number; question: string; options: string[]; correctIndex: number | null; }>;
->>>>>>> profile-settings-update
             const mapped: QuizQuestion[] = serverQs.map(q => ({ question: q.question, options: q.options || [], correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0 }));
             setQuestions(mapped.length ? mapped : null);
             setQuestionIds(serverQs.map(q => q.id));
@@ -443,7 +329,6 @@ export default function Quiz() {
             setSelected(null);
             setFeedback(null);
             setScore(0);
-<<<<<<< HEAD
           } else if (!getRes.ok) {
             const msg = (data && "error" in data && data.error) ? data.error : "Failed to reload quiz after reset";
             setError(msg);
@@ -457,17 +342,6 @@ export default function Quiz() {
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Failed to reset quiz";
         setError(msg);
-=======
-          } else {
-            setError((data as any)?.error || "Failed to reload quiz after reset");
-          }
-        } else {
-          const err = await res.json().catch(() => ({} as any));
-          setError(err?.error || "Failed to reset quiz");
-        }
-      } catch (e: any) {
-        setError(e?.message || "Failed to reset quiz");
->>>>>>> profile-settings-update
       } finally {
         setLoading(false);
       }
@@ -482,23 +356,6 @@ export default function Quiz() {
   };
 
   return (
-<<<<<<< HEAD
-    <div className="relative min-h-screen overflow-hidden px-4 pt-24 pb-12">
-      <div className="container mx-auto max-w-3xl space-y-6 text-white">
-        <div className="text-center space-y-2">
-          <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-[#FFBB94] to-[#FB9590] text-transparent bg-clip-text">
-            Quiz Generator
-          </h1>
-          <p className="text-pink-100 mt-1">Create quizzes from your notes and summaries — AI-powered ✨</p>
-        </div>
-
-        {!questions && (
-          <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
-            <CardHeader>
-              <CardTitle>Configure Quiz</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-=======
     <div className="min-h-screen">
       <div className="container mx-auto max-w-4xl px-4 pb-12">
         <div className="text-center space-y-2 mb-8">
@@ -521,7 +378,6 @@ export default function Quiz() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
->>>>>>> profile-settings-update
               <div className="grid md:grid-cols-2 gap-4">
                 <MultiCombo
                   label="Notes"
@@ -541,98 +397,6 @@ export default function Quiz() {
               </div>
 
               <label className="block">
-<<<<<<< HEAD
-                <span className="font-medium">Quiz size</span>
-                <select
-                  className="mt-2 p-2 border rounded bg-[#4C1D3D]/60 text-white border-pink-700/40 focus:outline-none focus:ring-2 focus:ring-pink-400/40"
-                  value={size}
-                  onChange={(e) => setSize(e.target.value as QuizSize)}
-                >
-                  <option value="small">Small</option>
-                  <option value="medium">Medium</option>
-                  <option value="large">Large</option>
-                  <option value="comprehensive">Comprehensive</option>
-                </select>
-              </label>
-
-              <div className="flex items-center justify-between">
-                <Button onClick={() => navigate(-1)} className="bg-[#852E4E] hover:bg-[#A33757]">Back</Button>
-                <Button
-                  onClick={requestQuiz}
-                  disabled={loading || disableSubmit}
-                  className="bg-[#852E4E] hover:bg-[#A33757]"
-                >
-                  {loading ? "Generating..." : "Generate Quiz"}
-                </Button>
-              </div>
-              {error && <p className="text-sm text-red-300">{error}</p>}
-            </CardContent>
-          </Card>
-        )}
-
-        {questions && current && (
-          <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
-            <CardHeader>
-              <CardTitle>Quiz</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between text-sm text-pink-200">
-                <div>Question {idx + 1} / {total}</div>
-                <div>Score: {score}</div>
-              </div>
-
-              <div className="text-lg font-medium text-[#FFBB94]">
-                <MarkdownMathRenderer text={current.question} />
-              </div>
-
-              <div className="space-y-2">
-                {current.options.map((opt, i) => (
-                  <label
-                    key={i}
-                    className={`flex items-center gap-2 p-2 rounded cursor-pointer bg-[#852E4E]/30 border border-pink-700/30 ${selected === i ? "ring-2 ring-pink-400/40" : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name="answer"
-                      checked={selected === i}
-                      onChange={() => setSelected(i)}
-                    />
-                    <div className="text-white">
-                      <MarkdownMathRenderer text={opt} />
-                    </div>
-                  </label>
-                ))}
-              </div>
-
-              {!feedback && (
-                <Button
-                  onClick={onSubmitAnswer}
-                  disabled={selected == null}
-                  className="bg-[#852E4E] hover:bg-[#A33757]"
-                >
-                  Submit Answer
-                </Button>
-              )}
-
-              {feedback && (
-                <div className="space-y-3">
-                  <div className={feedback === "correct" ? "text-green-300" : "text-red-300"}>
-                    {feedback === "correct" ? "Correct!" : "Incorrect."}
-                  </div>
-                  {idx < (questions.length - 1) ? (
-                    <Button onClick={nextQuestion} className="bg-[#852E4E] hover:bg-[#A33757]">Next Question</Button>
-                  ) : (
-                    <div className="space-x-2">
-                      <span className="font-medium">Finished!</span>
-                      <span>Final score: {score} / {questions.length}</span>
-                      <Button onClick={restart} className="ml-3 bg-[#852E4E] hover:bg-[#A33757]">{quizId ? "Retry Quiz" : "New Quiz"}</Button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {error && <p className="text-sm text-red-300">{error}</p>}
-=======
                 <span className="font-medium text-pink-100">Quiz Size</span>
                 <select
                   className="mt-2 w-full p-3 bg-[#852E4E]/40 border border-pink-700/40 rounded-lg text-white"
@@ -695,7 +459,9 @@ export default function Quiz() {
             <CardContent className="space-y-6">
               {current && (
                 <div className="space-y-6">
-                  <h2 className="text-xl font-semibold text-pink-50">{current.question}</h2>
+                  <div className="prose prose-invert max-w-none">
+                    <MarkdownMathRenderer text={current.question} />
+                  </div>
                   <div className="space-y-3">
                     {current.options.map((opt, i) => {
                       const isSelected = selected === i;
@@ -724,7 +490,9 @@ export default function Quiz() {
                           <div className="flex items-center gap-3">
                             {showCorrect && <CheckCircle2 className="h-5 w-5 text-green-400" />}
                             {showIncorrect && <XCircle className="h-5 w-5 text-red-400" />}
-                            <span>{opt}</span>
+                            <div className="flex-1 min-w-0 prose prose-invert max-w-none">
+                              <MarkdownMathRenderer text={opt} />
+                            </div>
                           </div>
                         </button>
                       );
@@ -798,7 +566,6 @@ export default function Quiz() {
                   <p className="text-red-200">{error}</p>
                 </div>
               )}
->>>>>>> profile-settings-update
             </CardContent>
           </Card>
         )}
