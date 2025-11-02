@@ -63,7 +63,9 @@ def drop_all_tables():
               FOR r IN (
                 SELECT tablename FROM pg_tables WHERE schemaname = 'public'
               ) LOOP
-                EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+                IF r.tablename <> 'users' THEN
+                  EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+                END IF;
               END LOOP;
             END $$;
             """
@@ -92,7 +94,9 @@ def create_tables():
               FOR r IN (
                 SELECT tablename FROM pg_tables WHERE schemaname = 'public'
               ) LOOP
-                EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+                IF r.tablename <> 'users' THEN
+                  EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+                END IF;
               END LOOP;
             END $$;
             """
@@ -148,12 +152,14 @@ def create_tables():
             """
             CREATE TABLE IF NOT EXISTS quizzes (
                 id SERIAL PRIMARY KEY,
+                course_id INTEGER,
                 title TEXT,
                 topics TEXT[] DEFAULT '{}',
                 created_by INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 score INTEGER,
-                FOREIGN KEY (created_by) REFERENCES users(id)
+                FOREIGN KEY (created_by) REFERENCES users(id),
+                FOREIGN KEY (course_id) REFERENCES courses(id)
             );
             """
         )
@@ -170,6 +176,8 @@ def create_tables():
                 correct_answer TEXT NOT NULL,
                 user_answer TEXT,
                 is_correct BOOLEAN,
+                confidence INTEGER,
+                topic TEXT,
                 FOREIGN KEY (quiz_id) REFERENCES quizzes(id),
                 UNIQUE (quiz_id, question_number)
             );
@@ -201,10 +209,13 @@ def create_tables():
             CREATE TABLE IF NOT EXISTS summaries (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL,
+                course_id INTEGER,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
+                topics TEXT[] DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (course_id) REFERENCES courses(id)
             );
             """
         )
@@ -215,16 +226,51 @@ def create_tables():
             CREATE TABLE IF NOT EXISTS study_guides (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL,
+                course_id INTEGER,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT NOW(),
-                FOREIGN KEY (user_id) REFERENCES users(id)
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (course_id) REFERENCES courses(id)
+            );
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS study_sets (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                course_id INTEGER NULL,
+                user_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                cards JSONB NOT NULL DEFAULT '[]'::jsonb,
+                FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE SET NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
             """
         )
 
         conn.commit()
-        print("Postgres database initialized successfully. Tables: users, courses, topics, quizzes, quiz_questions, notes, summaries, study_guides (with created_at)")
+        # Add unique index to prevent duplicate topics per course (case-insensitive)
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'topics_course_title_unique'
+                  ) THEN
+                    CREATE UNIQUE INDEX topics_course_title_unique ON topics (course_id, lower(title));
+                  END IF;
+                END $$;
+                """
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        print("Postgres database initialized successfully. Tables: users, courses, topics, quizzes, quiz_questions, notes, summaries, study_guides, study_sets")
     except Exception as e:
         conn.rollback()
         print("Initialization failed:", e)

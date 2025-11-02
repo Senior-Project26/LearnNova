@@ -889,6 +889,56 @@ def generate_flashcards_with_gemini(text: str, count: int) -> list[dict]:
         return []
 
 
+def generate_topics_from_text(text: str, count: int = 10) -> list[str]:
+    t = (text or "").strip()
+    if not t:
+        return []
+    prompt = (
+        "Extract exactly "
+        + str(count)
+        + " distinct topics from the CONTENT below as a JSON array of strings. "
+          "Topics should mix single words (e.g., 'derivatives', 'velocity', 'matrices') and short phrases (e.g., 'integration by parts', 'matrix multiplication', 'states of matter'). "
+          "No explanations; JSON array only.\n\nCONTENT:\n"
+        + t[:30000]
+    )
+    try:
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": {
+                    "type": "array",
+                    "minItems": count,
+                    "maxItems": count,
+                    "items": {"type": "string"},
+                },
+            },
+        )
+        raw = (getattr(resp, "text", None) or "").strip()
+        data = parse_json_lenient(raw or "[]")
+        arr = data if isinstance(data, list) else []
+        topics: list[str] = []
+        seen = set()
+        for s in arr:
+            try:
+                item = str(s).strip()
+            except Exception:
+                continue
+            if not item:
+                continue
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            topics.append(item[:80])
+            if len(topics) >= count:
+                break
+        return topics
+    except Exception:
+        return []
+
+
 # ============================================================================
 # ROUTES - AUTHENTICATION
 # ============================================================================
@@ -936,42 +986,6 @@ def firebase_login():
         return jsonify({"error": str(e)}), 401
 
 
-def ensure_study_guides_created_at(conn):
-    """Ensure study_guides table has created_at with default NOW()."""
-    cur = conn.cursor()
-    try:
-        cur.execute("ALTER TABLE study_guides ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        cur.close()
-
-
-def ensure_notes_created_at(conn):
-    """Ensure notes table has created_at with default NOW()."""
-    cur = conn.cursor()
-    try:
-        cur.execute("ALTER TABLE notes ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        cur.close()
-
-
-def ensure_summaries_created_at(conn):
-    """Ensure summaries table has created_at with default NOW()."""
-    cur = conn.cursor()
-    try:
-        cur.execute("ALTER TABLE summaries ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        cur.close()
-
-
 @app.get("/api/recent_sets")
 def list_recent_sets():
     """Return recent study sets and study guides for the current user ordered by created_at DESC.
@@ -984,14 +998,6 @@ def list_recent_sets():
     if not conn:
         return jsonify(error="Database connection error"), 500
     try:
-        ensure_study_sets_table(conn)
-        ensure_study_guides_created_at(conn)
-        # Also ensure timestamps exist broadly
-        try:
-            ensure_notes_created_at(conn)
-            ensure_summaries_created_at(conn)
-        except Exception:
-            pass
         cur = conn.cursor()
         # study sets
         try:
@@ -1070,8 +1076,6 @@ def list_recent_dashboard_sets():
     if not conn:
         return jsonify(error="Database connection error"), 500
     try:
-        ensure_study_sets_table(conn)
-        ensure_study_guides_created_at(conn)
         cur = conn.cursor()
         # study sets
         cur.execute(
@@ -1194,7 +1198,6 @@ def update_study_set(sid: int):
     if not conn:
         return jsonify(error="Database connection error"), 500
     try:
-        ensure_study_sets_table(conn)
         cur = conn.cursor()
         cur.execute("SELECT id FROM study_sets WHERE id = %s AND user_id = %s", (sid, user_id))
         row = cur.fetchone()
@@ -1277,32 +1280,6 @@ def list_courses():
 # ROUTES - STUDY SETS
 # ============================================================================
 
-def ensure_study_sets_table(conn):
-    """Create study_sets table if it doesn't already exist."""
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS study_sets (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            course_id INTEGER NULL,
-            user_id INTEGER NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW(),
-            FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE SET NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-        """
-    )
-    # Ensure cards column exists (array of cards as JSON objects {question, answer, title?})
-    try:
-        cur.execute("ALTER TABLE study_sets ADD COLUMN IF NOT EXISTS cards JSONB NOT NULL DEFAULT '[]'::jsonb")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    conn.commit()
-    cur.close()
-
-
 @app.post("/api/study_sets")
 def create_study_set():
     """Create a study set for the current user. Body: { name, course_id? }"""
@@ -1319,7 +1296,6 @@ def create_study_set():
     if not conn:
         return jsonify(error="Database connection error"), 500
     try:
-        ensure_study_sets_table(conn)
         cur = conn.cursor()
         # Validate cards if provided (store only question/answer)
         norm_cards = []
@@ -1362,7 +1338,6 @@ def list_study_sets():
     if not conn:
         return jsonify(error="Database connection error"), 500
     try:
-        ensure_study_sets_table(conn)
         cur = conn.cursor()
         if course_id is not None:
             cur.execute(
@@ -1408,7 +1383,6 @@ def add_card_to_study_set(sid: int):
     if not conn:
         return jsonify(error="Database connection error"), 500
     try:
-        ensure_study_sets_table(conn)
         cur = conn.cursor()
         cur.execute("SELECT id, cards FROM study_sets WHERE id = %s AND user_id = %s", (sid, user_id))
         row = cur.fetchone()
@@ -1444,7 +1418,6 @@ def delete_card_from_study_set(sid: int, card_index: int):
     if not conn:
         return jsonify(error="Database connection error"), 500
     try:
-        ensure_study_sets_table(conn)
         cur = conn.cursor()
         cur.execute("SELECT id, cards FROM study_sets WHERE id = %s AND user_id = %s", (sid, user_id))
         row = cur.fetchone()
@@ -1481,7 +1454,6 @@ def get_study_set(sid: int):
     if not conn:
         return jsonify(error="Database connection error"), 500
     try:
-        ensure_study_sets_table(conn)
         cur = conn.cursor()
         cur.execute(
             "SELECT id, name, course_id, created_at, cards FROM study_sets WHERE id = %s AND user_id = %s",
@@ -1556,7 +1528,6 @@ def create_flashcards_from_text():
         if not conn:
             return jsonify(error="Database connection error"), 500
         try:
-            ensure_study_sets_table(conn)
             cur = conn.cursor()
             cur.execute(
                 """
@@ -2171,6 +2142,19 @@ def create_summary():
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "").strip()
     content = (data.get("content") or "").strip()
+    topics = data.get("topics")
+    course_id = data.get("course_id")
+    try:
+        course_id = int(course_id) if course_id is not None else None
+    except Exception:
+        course_id = None
+    if isinstance(topics, list):
+        try:
+            topics = [str(t).strip() for t in topics if str(t).strip()]
+        except Exception:
+            topics = []
+    else:
+        topics = []
     if not content:
         return jsonify(error="content is required"), 400
     conn = get_connection()
@@ -2188,16 +2172,35 @@ def create_summary():
                 title = "Summary"
         cur.execute(
             """
-            INSERT INTO summaries (user_id, title, content)
-            VALUES (%s, %s, %s)
+            INSERT INTO summaries (user_id, title, content, topics, course_id)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING id, created_at
             """,
-            (user_id, title, content),
+            (user_id, title, content, topics, course_id),
         )
         sid, created_at = cur.fetchone()
+        # If a course is selected, upsert topics into the topics table (avoid duplicates by title per course)
+        if course_id and isinstance(topics, list) and len(topics) > 0:
+            for t in topics:
+                try:
+                    tt = str(t).strip()
+                except Exception:
+                    continue
+                if not tt:
+                    continue
+                cur.execute(
+                    "SELECT 1 FROM topics WHERE course_id = %s AND LOWER(title) = LOWER(%s) LIMIT 1",
+                    (course_id, tt),
+                )
+                exists = cur.fetchone() is not None
+                if not exists:
+                    cur.execute(
+                        "INSERT INTO topics (course_id, title, description) VALUES (%s, %s, %s)",
+                        (course_id, tt, ""),
+                    )
         conn.commit()
         cur.close()
-        return jsonify(id=sid, title=title, created_at=(created_at.isoformat() if created_at else None)), 201
+        return jsonify(id=sid, title=title, created_at=(created_at.isoformat() if created_at else None), topics=topics, course_id=course_id), 201
     except Exception as e:
         conn.rollback()
         return jsonify(error=str(e)), 500
@@ -2243,7 +2246,7 @@ def list_all_summaries():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, title, created_at
+            SELECT id, title, topics, course_id, created_at
             FROM summaries
             WHERE user_id = %s
             ORDER BY created_at DESC NULLS LAST, id DESC
@@ -2253,7 +2256,14 @@ def list_all_summaries():
         rows = cur.fetchall()
         cur.close()
         items = [
-            {"id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)} for r in rows
+            {
+                "id": r[0],
+                "title": r[1],
+                "topics": (r[2] or []),
+                "course_id": r[3],
+                "created_at": (r[4].isoformat() if r[4] else None),
+            }
+            for r in rows
         ]
         return jsonify(items=items), 200
     except Exception as e:
@@ -2274,14 +2284,21 @@ def get_summary(sid: int):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, title, content, created_at FROM summaries WHERE id = %s AND user_id = %s",
+            "SELECT id, title, content, topics, course_id, created_at FROM summaries WHERE id = %s AND user_id = %s",
             (sid, user_id),
         )
         row = cur.fetchone()
         cur.close()
         if not row:
             return jsonify(error="not found"), 404
-        return jsonify(id=row[0], title=row[1], content=row[2], created_at=(row[3].isoformat() if row[3] else None)), 200
+        return jsonify(
+            id=row[0],
+            title=row[1],
+            content=row[2],
+            topics=(row[3] or []),
+            course_id=row[4],
+            created_at=(row[5].isoformat() if row[5] else None)
+        ), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
     finally:
@@ -2334,7 +2351,7 @@ def dashboard_notes():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, title, updated_at
+            SELECT id, title, course_id, topics, updated_at
             FROM notes
             WHERE user_id = %s
             ORDER BY updated_at DESC NULLS LAST, id DESC
@@ -2347,7 +2364,9 @@ def dashboard_notes():
             {
                 "id": r[0],
                 "title": r[1],
-                "updated_at": (r[2].isoformat() if r[2] else None),
+                "course_id": r[2],
+                "topics": (r[3] or []),
+                "updated_at": (r[4].isoformat() if r[4] else None),
             }
             for r in rows
         ]
@@ -2377,7 +2396,9 @@ def dashboard_quizzes():
               COALESCE(q.score, 0) AS score,
               COUNT(qq.id) AS question_count,
               SUM(CASE WHEN COALESCE(NULLIF(qq.user_answer, ''), NULL) IS NOT NULL THEN 1 ELSE 0 END) AS answered_count,
-              q.title
+              q.title,
+              q.course_id,
+              q.topics
             FROM quizzes q
             LEFT JOIN quiz_questions qq ON qq.quiz_id = q.id
             WHERE q.created_by = %s
@@ -2396,6 +2417,8 @@ def dashboard_quizzes():
             question_count = r[3] or 0
             answered_count = r[4] or 0
             title = r[5]
+            course_id = r[6]
+            topics = r[7] or []
             completed = (question_count > 0 and answered_count >= question_count)
             items.append({
                 "id": qid,
@@ -2405,6 +2428,8 @@ def dashboard_quizzes():
                 "answered_count": answered_count,
                 "title": title,
                 "completed": completed,
+                "course_id": course_id,
+                "topics": topics,
             })
         return jsonify(items=items), 200
     except Exception as e:
@@ -2426,7 +2451,7 @@ def dashboard_study_guides():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, title
+            SELECT id, title, course_id
             FROM study_guides
             WHERE user_id = %s
             ORDER BY id DESC
@@ -2435,7 +2460,7 @@ def dashboard_study_guides():
         )
         rows = cur.fetchall()
         cur.close()
-        items = [{"id": r[0], "title": r[1]} for r in rows]
+        items = [{"id": r[0], "title": r[1], "course_id": r[2]} for r in rows]
         return jsonify(items=items), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
@@ -2504,12 +2529,15 @@ def upload():
             return jsonify(error="No text could be extracted from the file"), 400
 
         summary = precomputed_summary if (kind == "pdf" and 'precomputed_summary' in locals() and precomputed_summary) else summarize_text(extracted_text)
+        base_for_topics = extracted_text if extracted_text else summary
+        topics = generate_topics_from_text(base_for_topics, count=10)
         return jsonify(
             filename=filename,
             mimetype=mimetype,
             size=size,
             kind=kind,
             summary=summary,
+            topics=topics,
             extracted_text=extracted_text,
         ), 200
     except Exception as e:
