@@ -216,9 +216,20 @@ const Dashboard = () => {
                         </div>
                       </button>
                       <div className="flex items-center justify-between gap-2 pl-6">
-                        <Badge variant={q.score >= 70 ? "default" : "secondary"} className={`text-xs ${q.score >= 70 ? 'bg-green-900/40 text-green-200 border-green-700/50' : 'bg-[#852E4E] text-[#FFBB94] border-pink-700/40'}`}>
-                          Score: {q.score ?? 0}%
-                        </Badge>
+                        {(() => {
+                          const correct = typeof q.score === 'number' ? q.score : 0;
+                          const total = typeof q.question_count === 'number' ? q.question_count : 0;
+                          const pct = total > 0 ? Math.round((correct / total) * 100) : 0;
+                          const good = pct >= 70;
+                          return (
+                            <Badge
+                              variant={good ? 'default' : 'secondary'}
+                              className={`text-xs ${good ? 'bg-green-900/40 text-green-200 border-green-700/50' : 'bg-[#852E4E] text-[#FFBB94] border-pink-700/40'}`}
+                            >
+                              Result: {correct}/{total} ({pct}%)
+                            </Badge>
+                          );
+                        })()}
                         <div className="flex items-center gap-1">
                           {q.completed && (
                             <button

@@ -26,10 +26,28 @@ const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => 
     });
   };
 
+  const autoWrapSqrtOutsideMath = (input: string): string => {
+    if (!input) return "";
+    const parts = input.split(/(\${1,2}[\s\S]*?\1)/g);
+    return parts
+      .map((seg, i) => {
+        // Preserve existing math spans as-is (odd indices after split by capturing group)
+        if (i % 2 === 1) return seg;
+        let s = seg;
+        // Normalize sqrt forms in plain text and wrap with $...$
+        s = s.replace(/\/\s*sqrt\s*\(([^()\n\r]{1,80})\)/gi, (_m, inner) => `$\\sqrt{${inner}}$`);
+        s = s.replace(/(?<!\\)\bsqrt\s*\(([^()\n\r]{1,80})\)/g, (_m, inner) => `$\\sqrt{${inner}}$`);
+        s = s.replace(/\\sqrt\s*\(([^()\n\r]{1,80})\)/g, (_m, inner) => `$\\sqrt{${inner}}$`);
+        return s;
+      })
+      .join("");
+  };
+
   const decoded = decodeHexByteRuns(text || "");
+  const preprocessed = autoWrapSqrtOutsideMath(decoded);
   // Convert single newlines into Markdown hard line breaks to preserve line wraps
   // Keep paragraph breaks (double newlines) as-is
-  const withLineBreaks = decoded.replace(/([^\n])\n(?!\n)/g, "$1  \n");
+  const withLineBreaks = preprocessed.replace(/([^\n])\n(?!\n)/g, "$1  \n");
   const fixMathArrows = (s: string) => {
     return s.replace(/(\${1,2})([\s\S]*?)\1/g, (_m, d: string, body: string) => {
       let b = body;
@@ -37,6 +55,11 @@ const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => 
       b = b.replace(/\\left\s*\\?ightarrow\b/g, "\\leftrightarrow");
       b = b.replace(/\\?ightarrow\b/g, "\\rightarrow");
       b = b.replace(/(^|[^\\])rightarrow\b/g, (_m2, pre: string) => pre + "\\rightarrow");
+      // Normalize square roots: /sqrt(...), sqrt(...), \\sqrt(...) -> \\sqrt{...}
+      b = b.replace(/\/\s*sqrt\s*\(/gi, "\\sqrt{");
+      b = b.replace(/(?<!\\)\bsqrt\s*\(/g, "\\sqrt{");
+      b = b.replace(/\\sqrt\s*\(/g, "\\sqrt{");
+      b = b.replace(/(\\sqrt\{[^}\n\r]*?)\)/g, "$1}");
       return d + b + d;
     });
   };

@@ -95,6 +95,42 @@ def get_connection():
 # UTILITY FUNCTIONS - TEXT PROCESSING
 # ============================================================================
 
+def sanitize_katex(s: str) -> str:
+    """Fix common issues from LLM output that break KaTeX.
+    - Remove ASCII control chars (except \n, \t)
+    - Restore missing backslashes for common LaTeX commands like frac, binom, sqrt, sum, Greek letters, etc.
+    - Convert HTML entities &gt; &lt; back to literal > <
+    """
+    try:
+        if not isinstance(s, str):
+            return s
+        out = s
+        # 1) Remove problematic control characters (keep \n, \t)
+        out = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", out)
+        # 2) Replace HTML entities for inequalities
+        out = out.replace("&gt;", ">").replace("&lt;", "<")
+        # 3) Normalize common command forms
+        #    3a) Fix square roots written as /sqrt(...) or sqrt(...)-> \sqrt{...}
+        out = re.sub(r"/\s*sqrt\s*\(", r"\\sqrt{", out, flags=re.IGNORECASE)
+        out = re.sub(r"(?<!\\)\bsqrt\s*\(", r"\\sqrt{", out)
+        out = re.sub(r"\\sqrt\s*\(", r"\\sqrt{", out)
+        #    3b) Replace matching closing parenthesis after sqrt{...} with a brace if present
+        #        This is a light heuristic: only replace the first unmatched ')' after a recently opened '{'
+        out = re.sub(r"(\\sqrt\{[^\}\n\r]*?)\)", r"\1}", out)
+
+        #    3c) Add missing backslashes for common LaTeX commands if not already escaped
+        cmds = [
+            "frac", "binom", "sqrt", "sum", "prod", "alpha", "beta", "gamma", "delta", "epsilon",
+            "theta", "lambda", "mu", "sigma", "pi", "phi", "omega", "Omega", "ldots", "cdot",
+            "times", "leq", "geq", "neq", "pm", "mp", "overline", "underline", "hat", "bar",
+        ]
+        pattern = r"(?<!\\)\b(" + "|".join(cmds) + r")\b"
+        out = re.sub(pattern, r"\\\1", out)
+        return out
+    except Exception:
+        return s
+
+
 def estimate_tokens(s: str) -> int:
     """Estimate the number of tokens in a string."""
     return max(1, int(len(s) / 4))
@@ -583,6 +619,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         f"Return exactly {count} questions. "
         "Each question must have exactly 4 options and a single correctIndex (0..3). "
         "Return JSON only. "
+        "Do NOT copy or reword examples, data, names, or numbers from the SUMMARY. "
         "When using math, use LaTeX/KaTeX-safe syntax (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, Greek letters as \\alpha). "
         "Use literal '>' and '<' characters (not &gt; or &lt;). "
         "Do not include prose outside of JSON.\n\nSUMMARY:\n" + summary
@@ -592,6 +629,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         model="gemini-2.5-flash-lite",
         contents=user_prompt,
         config={
+            "temperature": 0.7,
             "response_mime_type": "application/json",
             "response_schema": {
                 "type": "array",
@@ -616,16 +654,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
     )
     raw = (getattr(resp, "text", None) or "").strip()
     data = parse_json_lenient(raw or "{}")
-    items = []
-    if isinstance(data, dict):
-        if isinstance(data.get("questions"), list):
-            items = data.get("questions") or []
-        elif isinstance(data.get("items"), list):
-            items = data.get("items") or []
-        elif isinstance(data.get("quiz"), dict) and isinstance(data["quiz"].get("questions"), list):
-            items = data["quiz"].get("questions") or []
-    elif isinstance(data, list):
-        items = data
+    items = data if isinstance(data, list) else (data.get("items") if isinstance(data, dict) else [])
     cleaned: list[dict] = []
     for q in items:
         if not isinstance(q, dict):
@@ -675,6 +704,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
             "Create a multiple-choice quiz as JSON only. "
             f"Return exactly {count} questions. "
             "Each question must have exactly 4 options and a single correctIndex (0..3). "
+            "Do NOT copy or reword examples, data, names, or numbers from the SUMMARY. "
             "When using math, use LaTeX/KaTeX-safe syntax (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, Greek letters as \\alpha). "
             "Use literal '>' and '<' characters (not &gt; or &lt;). "
             "Do not include prose outside of JSON.\n\nSUMMARY:\n" + summary
@@ -684,6 +714,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
                 model="gemini-2.5-flash-lite",
                 contents=retry_prompt,
                 config={
+                    "temperature": 0.7,
                     "response_mime_type": "application/json",
                     "response_schema": {
                         "type": "array",
@@ -755,8 +786,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         except Exception:
             pass
     return cleaned
-
-
+    
 # ============================================================================
 # UTILITY FUNCTIONS - STUDY GUIDE GENERATION
 # ============================================================================
@@ -769,9 +799,11 @@ def generate_study_guide(text: str) -> str:
         "- Use section headings and concise bullet points.\n"
         "- Expand briefly on key concepts (definitions, axioms, theorems, formulas).\n"
         "- Add short examples where helpful.\n"
+        "- When giving examples, invent fresh/original ones; do not copy or lightly paraphrase examples from the notes.\n"
         "- Avoid meta commentary and instructions. Output the study guide only.\n\n"
         f"NOTES:\n{text}"
     )
+
     try:
         resp = gemini_client.models.generate_content(
             model="gemini-2.5-flash-lite",
@@ -795,41 +827,11 @@ def estimate_flashcard_count(text: str) -> int:
     # Roughly 1 card per ~80 tokens, clamp to [10, 80]
     return max(10, min(80, t // 50))
 
-
-def sanitize_katex(s: str) -> str:
-    """Fix common issues from LLM output that break KaTeX.
-    - Remove ASCII control chars (except \n, \t)
-    - Restore missing backslashes for common LaTeX commands like frac, binom, sqrt, sum, Greek letters, etc.
-    - Convert HTML entities &gt; &lt; back to literal > <
-    """
-    try:
-        if not isinstance(s, str):
-            return s
-        out = s
-        # 1) Remove problematic control characters (keep \n, \t)
-        out = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", out)
-        # 2) Replace HTML entities for inequalities
-        out = out.replace("&gt;", ">").replace("&lt;", "<")
-        # 3) Add missing backslashes for common LaTeX commands if not already escaped
-        cmds = [
-            "frac", "binom", "sqrt", "sum", "prod", "alpha", "beta", "gamma", "delta", "epsilon",
-            "theta", "lambda", "mu", "sigma", "pi", "phi", "omega", "Omega", "ldots", "cdot",
-            "times", "leq", "geq", "neq", "pm", "mp", "overline", "underline", "hat", "bar",
-        ]
-        pattern = r"(?<!\\)\b(" + "|".join(cmds) + r")\b"
-        out = re.sub(pattern, r"\\\1", out)
-        return out
-    except Exception:
-        return s
-
-
 def generate_flashcards_with_gemini(text: str, count: int) -> list[dict]:
     """Ask Gemini for JSON list of {question, answer} pairs.
     Ensures valid structure and trims to requested count.
     """
-    schema_hint = [
-        {"question": "State the Binomial Theorem.", "answer": "For integers $n\\ge 0$, $(a+b)^n = \\sum_{k=0}^n \\binom{n}{k} a^{n-k} b^k$."}
-    ]
+
     prompt = (
         "Generate flashcards as a JSON array only (no prose, no markdown). "
         f"Return exactly {count} items. Each item must be an object with 'question' and 'answer' strings. "
@@ -837,6 +839,7 @@ def generate_flashcards_with_gemini(text: str, count: int) -> list[dict]:
         "If math is involved, write LaTeX delimited by $...$ (inline) or $$...$$ (block). "
         "When writing math, use KaTeX/LaTeX syntax for exponents, square roots, fractions, summations, and Greek letters (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, \\alpha). Do not use the caret '^' for exponents, plain 'sqrt', ASCII fractions, or plain Greek names. "
         "For inequalities, use the literal '>' and '<' characters, not HTML entities like &gt; or &lt;. "
+        "Do NOT copy or reword examples, data, names, or numbers from the SUMMARY. "
         "If chemistry is involved, use mhchem syntax like \\ce{H2O}, \\ce{Na+}. "
         "Do not include citations, references, or meta commentary.\n\nCONTENT:\n" + (text or "")
     )
