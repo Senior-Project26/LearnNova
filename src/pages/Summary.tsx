@@ -18,33 +18,48 @@ export default function Summary() {
   const [titleInput, setTitleInput] = useState("");
   const [nextSummaryNumber, setNextSummaryNumber] = useState<number | null>(null);
   const [nextNoteNumber, setNextNoteNumber] = useState<number | null>(null);
+  const [topics, setTopics] = useState<string[]>(Array.isArray(result?.topics) ? result.topics.slice(0, 10) : []);
+  const [courses, setCourses] = useState<Array<{ id: number; name: string }>>([]);
+  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
+  const [newCourseName, setNewCourseName] = useState("");
   const extractedText: string = useMemo(() => String(extractedFromState || ""), [extractedFromState]);
+  const toTitleCase = (s: string) => s.split(/\s+/).map(w => w ? (w[0].toUpperCase() + w.slice(1)) : w).join(" ");
+  const [newTopic, setNewTopic] = useState("");
+  const addTopic = () => {
+    const raw = newTopic.trim();
+    if (!raw) return;
+    const key = raw.toLowerCase();
+    const exists = topics.some(t => t.toLowerCase() === key);
+    if (exists) { setNewTopic(""); return; }
+    setTopics(prev => [...prev, raw]);
+    setNewTopic("");
+  };
 
   // Fetch latest ids to compute default next number for placeholder and fallback title
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
-        const [sRes, nRes] = await Promise.all([
+        const [sRes, nRes, cRes] = await Promise.all([
           fetch("/api/dashboard/summaries", { credentials: "include" }),
           fetch("/api/dashboard/notes", { credentials: "include" }),
+          fetch("/api/courses", { credentials: "include" }),
         ]);
         if (!mounted) return;
-        if (sRes.ok) {
-          const sj = await sRes.json();
-          const ids: number[] = (sj.items || []).map((it: any) => Number(it.id)).filter((x: any) => Number.isFinite(x));
-          const maxId = ids.length ? Math.max(...ids) : 0;
-          setNextSummaryNumber(maxId + 1);
+        if (sRes.status === 401 || nRes.status === 401 || cRes.status === 401) {
+          setNextSummaryNumber(1);
+          setNextNoteNumber(1);
+          setCourses([]);
+          return;
         }
-        if (nRes.ok) {
-          const nj = await nRes.json();
-          const ids: number[] = (nj.items || []).map((it: any) => Number(it.id)).filter((x: any) => Number.isFinite(x));
-          const maxId = ids.length ? Math.max(...ids) : 0;
-          setNextNoteNumber(maxId + 1);
-        }
-      } catch {
-        // ignore
-      }
+        const [sJson, nJson, cJson] = await Promise.all([sRes.json(), nRes.json(), cRes.json()]);
+        const nextS = (Array.isArray(sJson.items) && sJson.items.length > 0) ? (Math.max(...sJson.items.map((x: any) => x.id)) + 1) : 1;
+        const nextN = (Array.isArray(nJson.items) && nJson.items.length > 0) ? (Math.max(...nJson.items.map((x: any) => x.id)) + 1) : 1;
+        setNextSummaryNumber(nextS);
+        setNextNoteNumber(nextN);
+        const list = Array.isArray(cJson.courses) ? cJson.courses : [];
+        setCourses(list.map((c: any) => ({ id: Number(c.id), name: String(c.name || "") })));
+      } catch {}
     })();
     return () => { mounted = false; };
   }, []);
@@ -60,6 +75,8 @@ export default function Summary() {
         body: JSON.stringify({
           title: (titleInput.trim() || (`Summary #${nextSummaryNumber ?? ""}`)).trim(),
           content: summary,
+          topics: topics,
+          course_id: selectedCourseId,
         }),
       });
       if (res.ok) {
@@ -175,6 +192,82 @@ export default function Summary() {
                 <div className="bg-[#852E4E]/20 p-6 rounded-lg border border-pink-700/30 prose prose-invert max-w-none">
                   <MarkdownMathRenderer text={summary || ""} />
                 </div>
+                <div className="mt-4">
+                  <div className="text-sm text-pink-200 mb-2">Topics</div>
+                  <div className="flex flex-wrap gap-2">
+                    {topics.map((t, idx) => (
+                      <div key={idx} className="flex items-center gap-2 px-3 py-1 rounded-full bg-[#852E4E]/40 border border-pink-700/40 text-[#FFBB94]">
+                        <span className="text-sm">{toTitleCase(t)}</span>
+                        <button
+                          onClick={() => setTopics((prev) => prev.filter((_, i) => i !== idx))}
+                          className="h-5 w-5 inline-flex items-center justify-center rounded-full bg-[#A33757] hover:bg-[#DC586D] text-white"
+                          aria-label="Remove topic"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex items-center gap-2 flex-wrap">
+                    <input
+                      type="text"
+                      value={newTopic}
+                      onChange={(e) => setNewTopic(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTopic(); } }}
+                      placeholder="Add a topic..."
+                      className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-[#852E4E]/20 border border-pink-700/40 text-pink-100 placeholder-pink-300/50 focus:outline-none focus:ring-2 focus:ring-pink-600/40"
+                    />
+                    <button
+                      onClick={addTopic}
+                      className="px-3 py-2 rounded-lg bg-[#A33757] hover:bg-[#DC586D] text-white"
+                    >
+                      Add
+                    </button>
+                    <span className="mx-2 text-pink-300/50">|</span>
+                    <input
+                      type="text"
+                      value={newCourseName}
+                      onChange={(e) => setNewCourseName(e.target.value)}
+                      onKeyDown={async (e) => { if (e.key === 'Enter') { e.preventDefault();
+                        const name = newCourseName.trim(); if (!name) return;
+                        try {
+                          const res = await fetch('/api/courses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ name, description: 'Created from Summary' }) });
+                          const j = await res.json().catch(() => ({}));
+                          const createdId = j?.course?.id ?? j?.id;
+                          const createdName = j?.course?.name ?? name;
+                          if (res.ok && createdId) {
+                            const created = { id: Number(createdId), name: String(createdName) };
+                            setCourses(prev => [...prev, created]);
+                            setSelectedCourseId(created.id);
+                            setNewCourseName('');
+                          }
+                        } catch {}
+                      }}}
+                      placeholder="Add course"
+                      className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-[#852E4E]/20 border border-pink-700/40 text-pink-100 placeholder-pink-300/50 focus:outline-none focus:ring-2 focus:ring-pink-600/40"
+                    />
+                    <button
+                      onClick={async () => {
+                        const name = newCourseName.trim(); if (!name) return;
+                        try {
+                          const res = await fetch('/api/courses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ name, description: 'Created from Summary' }) });
+                          const j = await res.json().catch(() => ({}));
+                          const createdId = j?.course?.id ?? j?.id;
+                          const createdName = j?.course?.name ?? name;
+                          if (res.ok && createdId) {
+                            const created = { id: Number(createdId), name: String(createdName) };
+                            setCourses(prev => [...prev, created]);
+                            setSelectedCourseId(created.id);
+                            setNewCourseName('');
+                          }
+                        } catch {}
+                      }}
+                      className="px-3 py-2 rounded-lg bg-[#A33757] hover:bg-[#DC586D] text-white"
+                    >
+                      Add Course
+                    </button>
+                  </div>
+                </div>
                 <div className="mt-3 flex items-center gap-3">
                   <input
                     type="text"
@@ -183,10 +276,27 @@ export default function Summary() {
                     placeholder={`Name your summary (defaults to Summary #${nextSummaryNumber ?? ""})`}
                     className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-[#852E4E]/20 border border-pink-700/40 text-pink-100 placeholder-pink-300/50 focus:outline-none focus:ring-2 focus:ring-pink-600/40"
                   />
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm text-pink-200">Course</label>
+                    <select
+                      value={selectedCourseId ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setSelectedCourseId(v ? Number(v) : null);
+                      }}
+                      className="px-3 py-2 rounded-lg bg-[#4C1D3D] border border-pink-700/60 text-[#FFBB94] focus:outline-none appearance-none"
+                      style={{ backgroundColor: '#4C1D3D', color: '#FFBB94' }}
+                    >
+                      <option value="">No Course</option>
+                      {courses.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
                   <button
                     onClick={ensureSummarySaved}
-                    disabled={saving || !!savedSummaryId || !summary}
-                    className="px-4 py-2 bg-[#852E4E]/60 hover:bg-[#A33757] text-[#FFBB94] rounded-lg transition-colors disabled:opacity-60"
+                    className="px-3 py-2 rounded-lg bg-[#A33757] hover:bg-[#DC586D] text-white disabled:opacity-60"
+                    disabled={saving}
                   >
                     {savedSummaryId ? "Saved" : (saving ? "Saving…" : "Save Summary")}
                   </button>
