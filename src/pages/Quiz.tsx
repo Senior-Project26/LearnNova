@@ -9,9 +9,14 @@ import { Brain, CheckCircle2, XCircle, Sparkles, RotateCcw } from "lucide-react"
 type QuizSize = "small" | "medium" | "large" | "comprehensive";
 
 type QuizQuestion = {
+  id: number;
   question: string;
   options: string[]; // 4 options
   correctIndex: number; // 0..3
+  times_correct: number;
+  times_seen: number;
+  correct_streak: number;
+  option_counts: number[];
 };
 
 type QuizResponse = {
@@ -19,9 +24,21 @@ type QuizResponse = {
 };
 
 type ResumeQuizResponse = {
-  questions?: Array<{ id: number; question: string; options: string[]; correctIndex: number | null }>;
+  questions?: Array<{
+    id: number;
+    question: string;
+    options: string[];
+    correctIndex: number | null;
+    times_correct?: number;
+    times_seen?: number;
+    correct_streak?: number;
+    option_counts?: number[];
+  }>;
   next_unanswered_index?: number;
   score?: number;
+  original_count?: number;
+  display_correct?: number;
+  display_total?: number;
   error?: string;
 };
 
@@ -138,11 +155,15 @@ export default function Quiz() {
   const [selected, setSelected] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<"correct" | "incorrect" | null>(null);
   const [score, setScore] = useState(0);
+  const [totalOverride, setTotalOverride] = useState<number | null>(null);
   const [quizId, setQuizId] = useState<number | null>(null);
   const [questionIds, setQuestionIds] = useState<number[]>([]);
+  const [confidence, setConfidence] = useState<number | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   // Derived
   const current = questions ? questions[idx] : null;
   const total = questions ? questions.length : 0;
+  const totalDisplay = totalOverride ?? total;
 
   // Prefill from quizId (resume) or from navigation summary / sessionStorage, and load lists
   useEffect(() => {
@@ -184,18 +205,33 @@ export default function Quiz() {
             }
             const serverQs = (data?.questions || []) as Array<{
               id: number; question: string; options: string[]; correctIndex: number | null;
+              times_correct?: number; times_seen?: number; correct_streak?: number; option_counts?: number[];
             }>;
-            const mapped: QuizQuestion[] = serverQs.map(q => ({
-              question: q.question,
-              options: q.options || [],
-              correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0,
-            }));
+            const mapped: QuizQuestion[] = serverQs.map(q => {
+              const options = q.options || [];
+              const oc = Array.isArray(q.option_counts) && q.option_counts.length === options.length
+                ? q.option_counts
+                : Array(options.length).fill(0);
+              return ({
+                id: q.id,
+                question: q.question,
+                options,
+                correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0,
+                times_correct: Number.isFinite(q.times_correct) ? (q.times_correct as number) : 0,
+                times_seen: Number.isFinite(q.times_seen) ? (q.times_seen as number) : 0,
+                correct_streak: Number.isFinite(q.correct_streak) ? (q.correct_streak as number) : 0,
+                option_counts: oc,
+              });
+            });
             setQuestions(mapped.length ? mapped : null);
             setQuizId(qid);
             setQuestionIds(serverQs.map(q => q.id));
             const nextIdx = Math.max(0, Math.min((data?.next_unanswered_index ?? 0), Math.max(0, mapped.length)));
             setIdx(nextIdx);
-            setScore(Number(data?.score ?? 0));
+            // Prefer display_correct/display_total for practice/resume
+            setScore(Number((data?.display_correct ?? data?.score ?? 0)));
+            const denom = (typeof data?.display_total === 'number' ? data!.display_total! : (typeof data?.original_count === 'number' ? data!.original_count! : mapped.length));
+            setTotalOverride(denom);
             setLoading(false);
           } catch (e: any) {
             setError(e?.message || "Failed to load quiz");
@@ -233,19 +269,32 @@ export default function Quiz() {
     try {
       // Build combined summary from selected items if any
       let combined = "";
+      const topicSet = new Set<string>();
       if (selectedNoteIds.length > 0 || selectedSummaryIds.length > 0) {
         const notePromises = selectedNoteIds.map(async (id) => {
           const r = await fetch(`/api/notes/${id}`, { credentials: "include" });
-          const j = (await r.json().catch(() => ({}))) as unknown;
+          const j = (await r.json().catch(() => ({}))) as any;
           const { title, content } = parseContentResp(j);
+          try {
+            const topics: unknown = j?.topics;
+            if (Array.isArray(topics)) {
+              topics.forEach((t: any) => { const s = String(t || "").trim(); if (s) topicSet.add(s); });
+            }
+          } catch {}
           return (title ? `# Note: ${title}\n` : "") + (content || "");
         });
         const realSummaryIds = selectedSummaryIds.filter((id) => id !== -1);
         const includeProvided = selectedSummaryIds.includes(-1) ? [stateSummaryContent] : [];
         const summaryPromises = realSummaryIds.map(async (id) => {
           const r = await fetch(`/api/summaries/${id}`, { credentials: "include" });
-          const j = (await r.json().catch(() => ({}))) as unknown;
+          const j = (await r.json().catch(() => ({}))) as any;
           const { title, content } = parseContentResp(j);
+          try {
+            const topics: unknown = j?.topics;
+            if (Array.isArray(topics)) {
+              topics.forEach((t: any) => { const s = String(t || "").trim(); if (s) topicSet.add(s); });
+            }
+          } catch {}
           return (title ? `# Summary: ${title}\n` : "") + (content || "");
         });
         const parts = await Promise.all([...notePromises, ...summaryPromises]);
@@ -256,7 +305,7 @@ export default function Quiz() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ summary: payloadSummary, size }),
+      body: JSON.stringify({ summary: payloadSummary, size, topics: Array.from(topicSet) }),
     });
       const data = (await res
         .json()
@@ -266,9 +315,26 @@ export default function Quiz() {
       }
       const qs = (data as QuizResponse).questions || [];
       if (!qs.length) throw new Error("No questions returned");
-      setQuizId("quiz_id" in data && typeof data.quiz_id === "number" ? data.quiz_id : null);
-      setQuestionIds("question_ids" in data && Array.isArray(data.question_ids) ? (data.question_ids as number[]) : []);
-      setQuestions(qs);
+      const qids = ("question_ids" in data && Array.isArray((data as any).question_ids)) ? ((data as any).question_ids as number[]) : [];
+      const mapped: QuizQuestion[] = qs.map((q, i) => {
+        const id = qids[i] ?? -(i + 1);
+        const options = q.options || [];
+        const oc = Array(options.length).fill(0);
+        return {
+          id,
+          question: q.question,
+          options,
+          correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0,
+          times_correct: 0,
+          times_seen: 0,
+          correct_streak: 0,
+          option_counts: oc,
+        };
+      });
+      setQuizId("quiz_id" in data && typeof (data as any).quiz_id === "number" ? (data as any).quiz_id : null);
+      setQuestionIds(qids.length ? qids : mapped.map(m => m.id));
+      setQuestions(mapped);
+      setTotalOverride(mapped.length);
     } catch (e: any) {
       setError(e?.message || "Quiz request failed");
     } finally {
@@ -281,6 +347,7 @@ export default function Quiz() {
     const correct = selected === current.correctIndex;
     setFeedback(correct ? "correct" : "incorrect");
     if (correct) setScore((s) => s + 1);
+    // Keep history hidden by default; user can toggle it manually
 
     // Persist answer in background
     try {
@@ -294,11 +361,35 @@ export default function Quiz() {
           question_id: qid,
           question_number: idx + 1,
           user_answer: current.options[selected],
+          // Do not send confidence yet for correct answers; we'll capture it from the UI.
+          // For incorrect, backend will store confidence=0 automatically.
         }),
       });
     } catch (e) {
       console.warn("Failed to persist quiz answer", e);
     }
+
+    // Optimistically update local stats
+    setQuestions(prev => {
+      if (!prev) return prev;
+      const copy = [...prev];
+      const q = { ...copy[idx] };
+      const options = q.options || [];
+      const oc = q.option_counts && q.option_counts.length === options.length ? [...q.option_counts] : Array(options.length).fill(0);
+      if (selected != null && selected >= 0 && selected < oc.length) {
+        oc[selected] = (oc[selected] || 0) + 1;
+      }
+      q.option_counts = oc;
+      q.times_seen = (q.times_seen || 0) + 1;
+      if (correct) {
+        q.times_correct = (q.times_correct || 0) + 1;
+        q.correct_streak = (q.correct_streak || 0) + 1;
+      } else {
+        q.correct_streak = 0;
+      }
+      copy[idx] = q;
+      return copy;
+    });
   };
 
   const nextQuestion = () => {
@@ -308,6 +399,27 @@ export default function Quiz() {
       setIdx(next);
       setSelected(null);
       setFeedback(null);
+      setConfidence(null);
+    }
+  };
+
+  const selectConfidence = async (val: number) => {
+    setConfidence(val);
+    try {
+      const qid = questionIds[idx];
+      await fetch("/api/quiz/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          quiz_id: quizId,
+          question_id: qid,
+          question_number: idx + 1,
+          confidence: val,
+        }),
+      });
+    } catch (e) {
+      console.warn("Failed to persist confidence", e);
     }
   };
 
@@ -323,10 +435,28 @@ export default function Quiz() {
           const getRes = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
           const data = (await getRes.json().catch(() => ({}))) as unknown as ResumeQuizResponse | { error?: string };
           if (getRes.ok && data && typeof data === "object" && "questions" in data) {
-            const serverQs = (data.questions || []) as Array<{ id: number; question: string; options: string[]; correctIndex: number | null; }>;
-            const mapped: QuizQuestion[] = serverQs.map(q => ({ question: q.question, options: q.options || [], correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0 }));
+            const serverQs = (data.questions || []) as Array<{
+              id: number; question: string; options: string[]; correctIndex: number | null;
+              times_correct?: number; times_seen?: number; correct_streak?: number; option_counts?: number[];
+            }>;
+            const mapped: QuizQuestion[] = serverQs.map((q, i) => {
+              const options = q.options || [];
+              const oc = Array.isArray(q.option_counts) && q.option_counts.length === options.length
+                ? q.option_counts
+                : Array(options.length).fill(0);
+              return {
+                id: q.id ?? -(i + 1),
+                question: q.question,
+                options,
+                correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0,
+                times_correct: Number.isFinite(q.times_correct) ? (q.times_correct as number) : 0,
+                times_seen: Number.isFinite(q.times_seen) ? (q.times_seen as number) : 0,
+                correct_streak: Number.isFinite(q.correct_streak) ? (q.correct_streak as number) : 0,
+                option_counts: oc,
+              };
+            });
             setQuestions(mapped.length ? mapped : null);
-            setQuestionIds(serverQs.map(q => q.id));
+            setQuestionIds(mapped.map(q => q.id));
             setIdx(0);
             setSelected(null);
             setFeedback(null);
@@ -448,7 +578,7 @@ export default function Quiz() {
                 </CardTitle>
                 <div className="flex items-center gap-2 text-[#FFBB94] font-semibold">
                   <Brain className="h-5 w-5" />
-                  Score: {score}/{total}
+                  Score: {score}/{totalDisplay}
                 </div>
               </div>
               <div className="w-full bg-[#852E4E] rounded-full h-2 mt-2">
@@ -528,10 +658,63 @@ export default function Quiz() {
                           )}
                         </p>
                       </div>
+                      {/* Answer history toggle */}
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setShowHistory(s => !s)}
+                          className="text-sm text-[#FFBB94] hover:underline"
+                        >
+                          {showHistory ? "Hide" : "Show"} answer history
+                        </button>
+                      </div>
+                      {showHistory && (
+                        <div className="p-4 bg-[#852E4E]/30 border border-pink-700/40 rounded-lg space-y-3">
+                          <p className="text-pink-100 font-medium">Answer history</p>
+                          <div className="grid md:grid-cols-2 gap-3">
+                            <div className="text-sm text-pink-200">Times seen: <span className="text-pink-100 font-semibold">{current.times_seen ?? 0}</span></div>
+                            <div className="text-sm text-pink-200">Times correct: <span className="text-pink-100 font-semibold">{current.times_correct ?? 0}</span></div>
+                            <div className="text-sm text-pink-200">Current streak: <span className="text-pink-100 font-semibold">{current.correct_streak ?? 0}</span></div>
+                          </div>
+                          <div>
+                            <p className="text-sm text-pink-200 mb-2">Per-option selections:</p>
+                            <ul className="space-y-2">
+                              {current.options.map((opt, i) => (
+                                <li key={i} className={`flex items-start gap-2 text-sm ${i===current.correctIndex ? "text-green-200" : "text-pink-200"}`}>
+                                  <span className="min-w-[2rem] inline-block text-right text-pink-300">{(current.option_counts?.[i] ?? 0)}×</span>
+                                  <div className="flex-1 prose prose-invert max-w-none"><MarkdownMathRenderer text={opt} /></div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                      )}
+                      {feedback === "correct" && (
+                        <div className="space-y-3">
+                          <p className="text-pink-100 font-medium text-center">How confident were you on your answer?</p>
+                          <div className="flex gap-2">
+                            {[1,2,3,4,5].map((n) => (
+                              <button
+                                key={n}
+                                type="button"
+                                onClick={() => selectConfidence(n)}
+                                className={`flex-1 p-3 rounded-lg border-2 transition-all font-semibold text-center ${
+                                  confidence === n
+                                    ? "bg-[#A33757]/60 border-[#FFBB94] text-white"
+                                    : "bg-[#852E4E]/30 border-pink-700/40 text-pink-100 hover:bg-[#852E4E]/50 hover:border-[#FFBB94]"
+                                }`}
+                              >
+                                {n}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       {idx < total - 1 ? (
                         <Button
                           onClick={nextQuestion}
-                          className="w-full bg-gradient-to-r from-[#852E4E] to-[#A33757] hover:from-[#A33757] hover:to-[#852E4E] text-white font-semibold py-4"
+                          disabled={feedback === "correct" && confidence == null}
+                          className="w-full bg-gradient-to-r from-[#852E4E] to-[#A33757] hover:from-[#A33757] hover:to-[#852E4E] text-white font-semibold py-4 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           Next Question →
                         </Button>

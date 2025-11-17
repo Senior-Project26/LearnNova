@@ -43,8 +43,25 @@ const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => 
       .join("");
   };
 
+  // Wrap common bare LaTeX commands (e.g., \Theta(n^2)) that appear outside math into $...$
+  const autoWrapBareMathCommands = (input: string): string => {
+    if (!input) return "";
+    const parts = input.split(/(\${1,2}[\s\S]*?\1)/g);
+    return parts
+      .map((seg, i) => {
+        if (i % 2 === 1) return seg; // keep math spans unchanged
+        let s = seg;
+        // Conservative patterns: \\Word(args) or \\Word{args}
+        // Limit arg lengths and avoid newlines to reduce false positives
+        s = s.replace(/(\\[A-Za-z]+\s*\([^()\n\r]{1,80}\))/g, (_m, expr) => `$${expr}$`);
+        s = s.replace(/(\\[A-Za-z]+\s*\{[^{}\n\r]{1,80}\})/g, (_m, expr) => `$${expr}$`);
+        return s;
+      })
+      .join("");
+  };
+
   const decoded = decodeHexByteRuns(text || "");
-  const preprocessed = autoWrapSqrtOutsideMath(decoded);
+  const preprocessed = autoWrapBareMathCommands(autoWrapSqrtOutsideMath(decoded));
   // Convert single newlines into Markdown hard line breaks to preserve line wraps
   // Keep paragraph breaks (double newlines) as-is
   const withLineBreaks = preprocessed.replace(/([^\n])\n(?!\n)/g, "$1  \n");
@@ -60,6 +77,10 @@ const MarkdownMathRenderer: React.FC<MarkdownMathRendererProps> = ({ text }) => 
       b = b.replace(/(?<!\\)\bsqrt\s*\(/g, "\\sqrt{");
       b = b.replace(/\\sqrt\s*\(/g, "\\sqrt{");
       b = b.replace(/(\\sqrt\{[^}\n\r]*?)\)/g, "$1}");
+      // Normalize malformed fractions: \frac(expr)2 -> \frac{expr}{2}
+      b = b.replace(/\\frac\s*\(([^()\n\r]+)\)\s*([^\s{}]+)/g, "\\frac{$1}{$2}");
+      // Also handle simple space-separated tokens: \frac a b -> \frac{a}{b}
+      b = b.replace(/\\frac\s+([^\s{}]+)\s+([^\s{}]+)/g, "\\frac{$1}{$2}");
       return d + b + d;
     });
   };
