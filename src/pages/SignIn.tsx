@@ -106,7 +106,7 @@ const SignIn = () => {
               Continue with Google
             </Button>
             <div className="text-sm text-center">
-              Don\'t have an account? <Link to="/signup" className="underline">Sign up</Link>
+              Don't have an account? <Link to="/signup" className="underline">Sign up</Link>
             </div>
           </CardContent>
         </Card>
