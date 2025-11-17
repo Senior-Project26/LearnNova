@@ -170,6 +170,39 @@ const Dashboard = () => {
   const filteredNotes = useMemo(() => (notes || []).filter(n => matchesFilters(n.course_id ?? null, n.topics || [])), [notes, selectedCourseId, selectedTopic]);
   const filteredQuizzes = useMemo(() => (quizzes || []).filter(q => matchesFilters(q.course_id ?? null, q.topics || [])), [quizzes, selectedCourseId, selectedTopic]);
 
+  // Small helper component to render accurate per-run results for a quiz list item
+  function QuizResultBadge({ quizId, fallbackCorrect, fallbackTotal }: { quizId: number; fallbackCorrect: number; fallbackTotal: number }) {
+    const [dc, setDc] = useState<number | null>(null);
+    const [dt, setDt] = useState<number | null>(null);
+    useEffect(() => {
+      let mounted = true;
+      (async () => {
+        try {
+          const res = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
+          const data = await res.json().catch(() => ({}));
+          if (!mounted) return;
+          const dcor = typeof data?.display_correct === 'number' ? data.display_correct : null;
+          const dtot = typeof data?.display_total === 'number' ? data.display_total : (typeof data?.original_count === 'number' ? data.original_count : null);
+          if (dcor !== null) setDc(dcor);
+          if (dtot !== null) setDt(dtot);
+        } catch {}
+      })();
+      return () => { mounted = false; };
+    }, [quizId]);
+    const correct = (dc ?? fallbackCorrect) || 0;
+    const total = (dt ?? fallbackTotal) || 0;
+    const pct = total > 0 ? Math.round((correct / total) * 100) : 0;
+    const good = pct >= 70;
+    return (
+      <Badge
+        variant={good ? 'default' : 'secondary'}
+        className={`text-xs ${good ? 'bg-green-900/40 text-green-200 border-green-700/50' : 'bg-[#852E4E] text-[#FFBB94] border-pink-700/40'}`}
+      >
+        Result: {correct}/{total} ({pct}%)
+      </Badge>
+    );
+  }
+
   return (
     <div className="min-h-screen">
       <div className="container mx-auto px-4 pt-24 pb-12">
@@ -292,20 +325,7 @@ const Dashboard = () => {
                           </div>
                         </button>
                         <div className="flex items-center justify-between gap-2 pl-6">
-                          {(() => {
-                            const correct = typeof q.score === 'number' ? q.score : 0;
-                            const total = typeof q.question_count === 'number' ? q.question_count : 0;
-                            const pct = total > 0 ? Math.round((correct / total) * 100) : 0;
-                            const good = pct >= 70;
-                            return (
-                              <Badge
-                                variant={good ? 'default' : 'secondary'}
-                                className={`text-xs ${good ? 'bg-green-900/40 text-green-200 border-green-700/50' : 'bg-[#852E4E] text-[#FFBB94] border-pink-700/40'}`}
-                              >
-                                Result: {correct}/{total} ({pct}%)
-                              </Badge>
-                            );
-                          })()}
+                          <QuizResultBadge quizId={q.id} fallbackCorrect={typeof q.score === 'number' ? q.score : 0} fallbackTotal={typeof q.question_count === 'number' ? q.question_count : 0} />
                           <div className="flex items-center gap-1">
                             {q.completed && (
                               <button

@@ -620,8 +620,21 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         "Each question must have exactly 4 options and a single correctIndex (0..3). "
         "Return JSON only. "
         "Do NOT copy or reword examples, data, names, or numbers from the SUMMARY. "
+        # Math safety
         "When using math, use LaTeX/KaTeX-safe syntax (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, Greek letters as \\alpha). "
+        "Ensure expressions are KaTeX-parseable: escape special characters when needed and avoid HTML entities like &gt; or &lt;. "
         "Use literal '>' and '<' characters (not &gt; or &lt;). "
+        # Difficulty rubric & novelty/variety constraints
+        "\n\nDIFFICULTY RUBRIC (D in [0,1]):\n"
+        "- 0.2: basic recall/definition.\n"
+        "- 0.4: single-step application with straightforward numbers.\n"
+        "- 0.6: multi-step, subtle distractor based on common misconception.\n"
+        "- 0.8: novel scenario, integrates subtopics, careful reasoning.\n"
+        "- 1.0: multi-step + traps/edge-cases; requires deeper insight.\n"
+        "\nNOVELTY & VARIETY CONSTRAINTS:\n"
+        "- Do NOT rephrase or lightly modify prior questions; use new scenarios, variables, constraints, and structures.\n"
+        "- Balance conceptual vs computational vs edge-case questions; avoid repeating templates.\n"
+        "- Distractors must be plausible and tied to specific misconceptions; avoid trivial variants.\n"
         "Do not include prose outside of JSON.\n\nSUMMARY:\n" + summary
     )
 
@@ -629,7 +642,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         model="gemini-2.5-flash-lite",
         contents=user_prompt,
         config={
-            "temperature": 0.7,
+            "temperature": 1.0,
             "response_mime_type": "application/json",
             "response_schema": {
                 "type": "array",
@@ -706,7 +719,10 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
             "Each question must have exactly 4 options and a single correctIndex (0..3). "
             "Do NOT copy or reword examples, data, names, or numbers from the SUMMARY. "
             "When using math, use LaTeX/KaTeX-safe syntax (e.g., x^{2}, \\sqrt{...}, \\frac{...}{...}, \\sum, Greek letters as \\alpha). "
-            "Use literal '>' and '<' characters (not &gt; or &lt;). "
+            "Ensure expressions are KaTeX-parseable: escape special characters when needed and avoid HTML entities like &gt; or &lt;. Use literal '>' and '<'. "
+            "\nDIFFICULTY RUBRIC (D in [0,1]): 0.2 recall, 0.4 single-step, 0.6 multi-step with subtle distractor, 0.8 novel/integrated, 1.0 multi-step + traps.\n"
+            "NOVELTY: Do NOT rephrase prior questions; change scenario, variables, constraints, and structure.\n"
+            "VARIETY: Mix conceptual/computational/edge-cases; avoid repeating templates. Distractors must be plausible misconceptions.\n"
             "Do not include prose outside of JSON.\n\nSUMMARY:\n" + summary
         )
         try:
@@ -714,7 +730,7 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
                 model="gemini-2.5-flash-lite",
                 contents=retry_prompt,
                 config={
-                    "temperature": 0.7,
+                    "temperature": 1.0,
                     "response_mime_type": "application/json",
                     "response_schema": {
                         "type": "array",
@@ -1752,41 +1768,356 @@ def get_quiz(qzid: int):
         return jsonify(error="Database connection error"), 500
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, created_at, COALESCE(score,0) FROM quizzes WHERE id = %s AND created_by = %s", (qzid, user_id))
+        cur.execute("SELECT id, created_at, COALESCE(score,0), COALESCE(original_count, 0), COALESCE(source_summary, '') FROM quizzes WHERE id = %s AND created_by = %s", (qzid, user_id))
         q = cur.fetchone()
         if not q:
             return jsonify(error="not found"), 404
+        # Determine if quiz is completed (no unanswered questions)
         cur.execute(
             """
-            SELECT id, question_number, question, options, correct_answer, user_answer, is_correct
+            SELECT
+              SUM(CASE WHEN (user_answer IS NULL OR TRIM(user_answer) = '') THEN 1 ELSE 0 END) AS unanswered_count
             FROM quiz_questions
             WHERE quiz_id = %s
-            ORDER BY question_number ASC
             """,
             (qzid,),
         )
-        rows = cur.fetchall()
+        unanswered_row = cur.fetchone()
+        unanswered_count = int(unanswered_row[0] or 0)
+        completed = unanswered_count == 0
+        # Determine if spaced repetition is active for this quiz (any next_review set)
+        cur.execute("SELECT EXISTS (SELECT 1 FROM quiz_questions WHERE quiz_id = %s AND next_review IS NOT NULL)", (qzid,))
+        has_spaced = bool(cur.fetchone()[0])
+
+        # Always compute due set (for practice we will further filter to original_count block)
+        cur.execute(
+            """
+            SELECT id, question_number, question, options, correct_answer, user_answer, is_correct, confidence,
+                   COALESCE(times_correct,0), COALESCE(times_seen,0), COALESCE(correct_streak,0), COALESCE(option_counts, '{}')
+            FROM quiz_questions
+            WHERE quiz_id = %s AND next_review IS NOT NULL AND next_review <= NOW()
+            ORDER BY next_review ASC, COALESCE(confidence, 999) ASC
+            """,
+            (qzid,),
+        )
+        due_rows = cur.fetchall()
+
+        # Backfill if needed when practicing (completed or spaced active)
+        orig_count = int(q[3] or 0)
+        # Cap current due rows to original_count if defined
+        if orig_count > 0 and len(due_rows) > orig_count:
+            due_rows = due_rows[:orig_count]
+        source_summary = str(q[4] or "")
+        # Only enter spaced/practice mode when the quiz is fully completed.
+        # In-progress quizzes should continue with the original flow (ordered by question_number).
+        practice_mode = completed
+        # Restrict due set to questions from the original instance only
+        if practice_mode and orig_count > 0:
+            due_rows = [r for r in due_rows if int(r[1] or 0) <= orig_count]
+        if practice_mode and orig_count > 0 and len(due_rows) < orig_count and source_summary.strip():
+            need = orig_count - len(due_rows)
+            # Collect existing texts and topics
+            cur.execute(
+                """
+                SELECT question, COALESCE(topic, '') FROM quiz_questions
+                WHERE quiz_id = %s
+                ORDER BY question_number ASC
+                """,
+                (qzid,),
+            )
+            all_qs = cur.fetchall()
+            existing_texts = set()
+            existing_topics = set()
+            for question_text, topic in all_qs:
+                tnorm = (question_text or '').strip().lower()
+                existing_texts.add(tnorm)
+                if topic:
+                    existing_topics.add(str(topic).strip())
+
+            topic_list = sorted(t for t in existing_topics if t)
+            # Load per-quiz topic difficulty map
+            cur.execute("SELECT COALESCE(topic_difficulty, '{}'::jsonb) FROM quizzes WHERE id = %s", (qzid,))
+            td_map_row = cur.fetchone()
+            td_map = {}
+            try:
+                if td_map_row and td_map_row[0]:
+                    td_map = dict(td_map_row[0]) if isinstance(td_map_row[0], dict) else json.loads(td_map_row[0])
+            except Exception:
+                td_map = {}
+            difficulty_lines = []
+            harder_topics: list[str] = []
+            for t in topic_list:
+                dval = td_map.get(t, None)
+                if isinstance(dval, (int, float)):
+                    try:
+                        dclamp = max(0.0, min(1.0, float(dval)))
+                    except Exception:
+                        dclamp = 0.5
+                    boosted = max(0.0, min(1.0, dclamp + 0.10))
+                    difficulty_lines.append(f"- {t}: target difficulty {boosted:.2f} (previous {dclamp:.2f})")
+                    harder_topics.append(t)
+            diff_note = ("\n\nDIFFICULTY TARGETS (by topic):\n" + "\n".join(difficulty_lines)) if difficulty_lines else ""
+            topic_note = ("\n\nONLY create questions about these topics (balance coverage, maximize variety, avoid duplicates): " + ", ".join(topic_list)) if topic_list else ""
+            harder_note = ("\n\nFOR THESE TOPICS, make each new question strictly harder than prior ones for that topic: " + ", ".join(harder_topics)) if harder_topics else ""
+            # Build a compact list of prior question stems to avoid reusing/paraphrasing
+            prior_stems: list[str] = []
+            for qtext, _tp in all_qs:
+                s = (qtext or "").strip()
+                if not s:
+                    continue
+                s = re.sub(r"\s+", " ", s)
+                if len(s) > 160:
+                    s = s[:157] + "..."
+                prior_stems.append(f"- {s}")
+                if len(prior_stems) >= 10:
+                    break
+            avoid_note = (
+                "\n\nDO NOT ECHO CONTEXT OR INSTRUCTIONS. RETURN JSON ONLY.\n"
+                "AVOID REPEATS: Do NOT rephrase or lightly modify any of these prior questions.\n"
+                "Do NOT include any content from the following block in your output; it is for avoidance only.\n"
+                + "```\n" + "\n".join(prior_stems) + "\n```\n"
+            ) if prior_stems else ""
+            variety_note = "\n\nVARY question styles (conceptual, computational, edge cases), and increase complexity according to target difficulty."
+            gen_input_summary = source_summary + topic_note + diff_note + harder_note + avoid_note + variety_note
+            try:
+                fresh = generate_quiz_with_gemini(gen_input_summary, max(need * 2, need + 2))
+            except Exception:
+                fresh = []
+            # Simple token-overlap de-dup (no regex): lowercase, strip basic punctuation, split on whitespace
+            def _norm_tokens(txt: str) -> set:
+                s = (txt or "").lower()
+                s = s.translate(str.maketrans('', '', 
+                    ".,;:!?()[]{}<>\"'`|\\/+-*=^_%$#@&"))
+                return set(t for t in s.split() if len(t) > 2)
+
+            existing_token_sets = [_norm_tokens(qtext) for qtext, _tp in all_qs]
+
+            new_cleaned = []
+            new_token_sets = []
+            for qd in fresh:
+                qt = (qd.get('question') or '').strip()
+                if not qt:
+                    continue
+                tnorm = qt.lower()
+                if tnorm in existing_texts:
+                    continue
+                # reject paraphrases by token-set Jaccard similarity vs prior questions
+                toks = _norm_tokens(qt)
+                is_similar = False
+                for etoks in existing_token_sets:
+                    union = len(toks | etoks) or 1
+                    jacc = len(toks & etoks) / union
+                    if jacc >= 0.5:
+                        is_similar = True
+                        break
+                if is_similar:
+                    continue
+                # also prevent duplicates within this generated batch
+                for btoks in new_token_sets:
+                    union = len(toks | btoks) or 1
+                    jacc = len(toks & btoks) / union
+                    if jacc >= 0.5:
+                        is_similar = True
+                        break
+                if is_similar:
+                    continue
+                assigned_topic = None
+                for t in topic_list:
+                    if t and t.lower() in tnorm:
+                        assigned_topic = t
+                        break
+                if not assigned_topic and topic_list:
+                    idx_rr = len(new_cleaned) % len(topic_list)
+                    assigned_topic = topic_list[idx_rr]
+                qd['_assigned_topic'] = assigned_topic
+                new_cleaned.append(qd)
+                new_token_sets.append(toks)
+                if len(new_cleaned) >= need:
+                    break
+            # Retry generation if we still need more unique items
+            attempts = 0
+            while len(new_cleaned) < need and attempts < 2:
+                attempts += 1
+                try:
+                    more = generate_quiz_with_gemini(gen_input_summary, max((need - len(new_cleaned)) * 3, (need - len(new_cleaned)) + 2))
+                except Exception:
+                    more = []
+                for qd in more:
+                    qt = (qd.get('question') or '').strip()
+                    if not qt:
+                        continue
+                    tnorm = qt.lower()
+                    if tnorm in existing_texts:
+                        continue
+                    toks = _norm_tokens(qt)
+                    is_similar = False
+                    for etoks in existing_token_sets:
+                        union = len(toks | etoks) or 1
+                        jacc = len(toks & etoks) / union
+                        if jacc >= 0.5:
+                            is_similar = True
+                            break
+                    if is_similar:
+                        continue
+                    for btoks in new_token_sets:
+                        union = len(toks | btoks) or 1
+                        jacc = len(toks & btoks) / union
+                        if jacc >= 0.5:
+                            is_similar = True
+                            break
+                    if is_similar:
+                        continue
+                    assigned_topic = None
+                    for t in topic_list:
+                        if t and t.lower() in tnorm:
+                            assigned_topic = t
+                            break
+                    if not assigned_topic and topic_list:
+                        idx_rr = len(new_cleaned) % len(topic_list)
+                        assigned_topic = topic_list[idx_rr]
+                    qd['_assigned_topic'] = assigned_topic
+                    new_cleaned.append(qd)
+                    new_token_sets.append(toks)
+                    if len(new_cleaned) >= need:
+                        break
+
+            if new_cleaned:
+                cur.execute("SELECT COALESCE(MAX(question_number), 0) FROM quiz_questions WHERE quiz_id = %s", (qzid,))
+                max_num = int(cur.fetchone()[0] or 0)
+                inserted_any = False
+                for i, qd in enumerate(new_cleaned, start=1):
+                    options = qd.get('options') or []
+                    question = qd.get('question') or ''
+                    ci = qd.get('correctIndex')
+                    try:
+                        correct_answer = options[ci] if isinstance(ci, int) and 0 <= ci < len(options) else None
+                    except Exception:
+                        correct_answer = None
+                    if not question or correct_answer is None:
+                        continue
+                    try:
+                        cur.execute(
+                            """
+                            INSERT INTO quiz_questions (
+                                quiz_id, question_number, question, options, correct_answer, user_answer, is_correct, topic,
+                                last_reviewed, next_review
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                qzid,
+                                max_num + i,
+                                question,
+                                options,
+                                correct_answer,
+                                None,
+                                None,
+                                qd.get('_assigned_topic'),
+                                q[1],  # quiz created_at
+                                q[1],  # set next_review to created_at so it appears first
+                            ),
+                        )
+                        inserted_any = True
+                    except Exception:
+                        continue
+                if inserted_any:
+                    conn.commit()
+                    # refresh due_rows
+                    cur.execute(
+                        """
+                        SELECT id, question_number, question, options, correct_answer, user_answer, is_correct, confidence,
+                               COALESCE(times_correct,0), COALESCE(times_seen,0), COALESCE(correct_streak,0), COALESCE(option_counts, '{}')
+                        FROM quiz_questions
+                        WHERE quiz_id = %s AND next_review IS NOT NULL AND next_review <= NOW()
+                        ORDER BY next_review ASC, COALESCE(confidence, 999) ASC
+                        """,
+                        (qzid,),
+                    )
+                    due_rows = cur.fetchall()
+                    # Restrict to original block again after refresh
+                    if practice_mode and orig_count > 0:
+                        due_rows = [r for r in due_rows if int(r[1] or 0) <= orig_count]
+                    # Cap refreshed due rows to original_count as well
+                    if orig_count > 0 and len(due_rows) > orig_count:
+                        due_rows = due_rows[:orig_count]
+
+        # Choose which rows to return
+        if practice_mode:
+            rows = due_rows
+        else:
+            # In-progress: restrict to the original instance only
+            cur.execute(
+                """
+                SELECT id, question_number, question, options, correct_answer, user_answer, is_correct, confidence,
+                       COALESCE(times_correct,0), COALESCE(times_seen,0), COALESCE(correct_streak,0), COALESCE(option_counts, '{}')
+                FROM quiz_questions
+                WHERE quiz_id = %s AND question_number <= %s
+                ORDER BY question_number ASC
+                """,
+                (qzid, int(q[3] or 0)),
+            )
+            rows = cur.fetchall()
+        # Final safety cap: never return more than original_count
+        if orig_count > 0 and rows:
+            rows = rows[:orig_count]
         cur.close()
         questions = []
         next_idx = None
-        for rid, num, question, options, correct_answer, user_answer, is_correct in rows:
-            if next_idx is None and (user_answer is None or str(user_answer).strip() == ""):
-                next_idx = int(num) - 1
-            questions.append({
-                "id": rid,
-                "question_number": num,
-                "question": question,
-                "options": options or [],
-                "correctIndex": ((options or []).index(correct_answer) if (options and correct_answer in (options or [])) else None),
-                "user_answer": user_answer,
-                "is_correct": is_correct,
-            })
+        # If the quiz is completed, we are returning a filtered 'due' subset. Renumber the sequence in the payload
+        # to ensure the client does not anchor on original question_number and show stale items.
+        if completed:
+            for i, (rid, num, question, options, correct_answer, user_answer, is_correct, confidence, times_correct, times_seen, correct_streak, option_counts) in enumerate(rows, start=1):
+                # For a due set, treat the first item as the next index
+                if next_idx is None:
+                    next_idx = 0
+                questions.append({
+                    "id": rid,
+                    "question_number": i,
+                    "question": question,
+                    "options": options or [],
+                    "correctIndex": ((options or []).index(correct_answer) if (options and correct_answer in (options or [])) else None),
+                    "user_answer": user_answer,
+                    "is_correct": is_correct,
+                    "confidence": confidence,
+                    "times_correct": times_correct,
+                    "times_seen": times_seen,
+                    "correct_streak": correct_streak,
+                    "option_counts": option_counts or [],
+                })
+        else:
+            for rid, num, question, options, correct_answer, user_answer, is_correct, confidence, times_correct, times_seen, correct_streak, option_counts in rows:
+                if next_idx is None and (user_answer is None or str(user_answer).strip() == ""):
+                    next_idx = int(num) - 1
+                questions.append({
+                    "id": rid,
+                    "question_number": num,
+                    "question": question,
+                    "options": options or [],
+                    "correctIndex": ((options or []).index(correct_answer) if (options and correct_answer in (options or [])) else None),
+                    "user_answer": user_answer,
+                    "is_correct": is_correct,
+                    "confidence": confidence,
+                    "times_correct": times_correct,
+                    "times_seen": times_seen,
+                    "correct_streak": correct_streak,
+                    "option_counts": option_counts or [],
+                })
+        # Compute display score based on the rows we are returning (not historical total)
+        try:
+            display_correct = sum(1 for r in rows if (r[6] is True))  # r[6] is is_correct
+        except Exception:
+            display_correct = 0
+        display_total = orig_count if (orig_count and orig_count > 0) else (len(rows) if rows else 0)
+
         return jsonify(
             id=q[0],
             created_at=(q[1].isoformat() if q[1] else None),
             score=q[2],
             questions=questions,
             next_unanswered_index=(next_idx if next_idx is not None else 0),
+            original_count=orig_count,
+            display_correct=display_correct,
+            display_total=display_total,
         ), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
@@ -1824,7 +2155,7 @@ def rename_quiz(qid: int):
 
 
 @app.post("/api/quiz")
-def generate_quiz_endpoint():
+def create_quiz():
     """Generate a quiz from summary text."""
     data = request.get_json(silent=True) or {}
     summary: str = (data.get("summary") or "").strip()
@@ -1849,6 +2180,19 @@ def generate_quiz_endpoint():
     ok, msg = ensure_minimum_summary(summary, size)
     if not ok:
         return jsonify(error=msg), 400
+    # Optional topics list from client (selected texts' topics)
+    try:
+        payload = request.get_json(silent=True) or {}
+    except Exception:
+        payload = {}
+    raw_topics = payload.get("topics") if isinstance(payload, dict) else None
+    topics_list: list[str] = []
+    if isinstance(raw_topics, list):
+        try:
+            topics_list = [str(t).strip() for t in raw_topics if str(t).strip()]
+        except Exception:
+            topics_list = []
+
     try:
         questions = generate_quiz_with_gemini(summary, count)
     except Exception as e:
@@ -1870,11 +2214,11 @@ def generate_quiz_endpoint():
             return jsonify(error="invalid session: user not found. Please sign in again."), 401
         cur.execute(
             """
-            INSERT INTO quizzes (topics, created_by, score)
-            VALUES (ARRAY[]::TEXT[], %s, 0)
+            INSERT INTO quizzes (topics, created_by, score, original_count, source_summary)
+            VALUES (%s, %s, 0, %s, %s)
             RETURNING id
             """,
-            (user_id,),
+            (topics_list if topics_list else [], user_id, count, summary),
         )
         quiz_id = cur.fetchone()[0]
 
@@ -1920,10 +2264,26 @@ def record_quiz_answer():
     question_id = data.get("question_id")
     question_number = data.get("question_number")
     user_answer = (data.get("user_answer") or "").strip()
+    # Optional confidence (0-5); if incorrect, will be stored as 0
+    raw_conf = data.get("confidence")
+    confidence = None
+    try:
+        if raw_conf is not None:
+            ci = int(raw_conf)
+            if ci < 0:
+                ci = 0
+            if ci > 5:
+                ci = 5
+            confidence = ci
+    except Exception:
+        confidence = None
     if not isinstance(quiz_id, int):
         return jsonify(error="quiz_id required"), 400
     if not question_id and not isinstance(question_number, int):
         return jsonify(error="question_id or question_number required"), 400
+    # At least one of user_answer or confidence must be provided
+    if not user_answer and confidence is None:
+        return jsonify(error="user_answer or confidence required"), 400
 
     conn = get_connection()
     if not conn:
@@ -1937,34 +2297,189 @@ def record_quiz_answer():
 
         if not question_id:
             cur.execute(
-                "SELECT id, correct_answer, is_correct FROM quiz_questions WHERE quiz_id = %s AND question_number = %s",
+                "SELECT id, correct_answer, is_correct, interval, topic, COALESCE(correct_streak, 0), options, option_counts FROM quiz_questions WHERE quiz_id = %s AND question_number = %s",
                 (quiz_id, question_number),
             )
         else:
             cur.execute(
-                "SELECT id, correct_answer, is_correct FROM quiz_questions WHERE id = %s AND quiz_id = %s",
+                "SELECT id, correct_answer, is_correct, interval, topic, COALESCE(correct_streak, 0), options, option_counts FROM quiz_questions WHERE id = %s AND quiz_id = %s",
                 (question_id, quiz_id),
             )
         qrow = cur.fetchone()
         if not qrow:
             return jsonify(error="question not found"), 404
-        qid, correct_answer, prev_is_correct = qrow
-
-        is_correct = (user_answer == (correct_answer or "")) if user_answer else False
-
-        cur.execute(
-            "UPDATE quiz_questions SET user_answer = %s, is_correct = %s WHERE id = %s",
-            (user_answer or None, is_correct, qid),
-        )
+        qid, correct_answer, prev_is_correct, prev_interval, topic, prev_streak, q_options, q_option_counts = qrow
 
         score_incremented = False
-        if is_correct and prev_is_correct is not True:
-            cur.execute("UPDATE quizzes SET score = COALESCE(score, 0) + 1 WHERE id = %s", (quiz_id,))
-            score_incremented = True
+        is_correct = None
+
+        if user_answer:
+            is_correct = (user_answer == (correct_answer or "")) if user_answer else False
+            # Determine confidence to persist in this update
+            # If incorrect and confidence not provided, store 0
+            conf_to_set = confidence
+            if conf_to_set is None and is_correct is False:
+                conf_to_set = 0
+            if conf_to_set is not None:
+                cur.execute(
+                    "UPDATE quiz_questions SET user_answer = %s, is_correct = %s, confidence = %s WHERE id = %s",
+                    (user_answer or None, is_correct, conf_to_set, qid),
+                )
+            else:
+                cur.execute(
+                    "UPDATE quiz_questions SET user_answer = %s, is_correct = %s WHERE id = %s",
+                    (user_answer or None, is_correct, qid),
+                )
+
+            # Update option_counts for the selected answer
+            try:
+                options_list = list(q_options or [])
+            except Exception:
+                options_list = []
+            try:
+                counts_list = list(q_option_counts or [])
+            except Exception:
+                counts_list = []
+            if options_list:
+                # Ensure counts_list length matches options_list
+                if len(counts_list) != len(options_list):
+                    counts_list = [0] * len(options_list)
+                sel_idx = None
+                try:
+                    sel_idx = options_list.index(user_answer)
+                except Exception:
+                    sel_idx = None
+                if sel_idx is not None and 0 <= sel_idx < len(counts_list):
+                    try:
+                        counts_list[sel_idx] = int(counts_list[sel_idx] or 0) + 1
+                    except Exception:
+                        counts_list[sel_idx] = 1
+                    # Persist updated counts
+                    cur.execute(
+                        "UPDATE quiz_questions SET option_counts = %s WHERE id = %s",
+                        (counts_list, qid),
+                    )
+
+            # Update counters: times_seen always; times_correct/correct_streak on correctness
+            cur.execute(
+                "UPDATE quiz_questions SET times_seen = COALESCE(times_seen,0) + 1 WHERE id = %s",
+                (qid,),
+            )
+
+            if is_correct and prev_is_correct is not True:
+                cur.execute("UPDATE quizzes SET score = COALESCE(score, 0) + 1 WHERE id = %s", (quiz_id,))
+                score_incremented = True
+
+            # Spaced repetition scheduling updates
+            if is_correct:
+                # bump correct counters
+                cur.execute(
+                    "UPDATE quiz_questions SET times_correct = COALESCE(times_correct,0) + 1, correct_streak = COALESCE(correct_streak,0) + 1 WHERE id = %s",
+                    (qid,),
+                )
+                new_streak = int((prev_streak or 0)) + 1
+                # Only update interval when we have confidence (either now or later in confidence-only path)
+                if confidence is not None:
+                    try:
+                        cur_int = int(prev_interval) if prev_interval is not None else 1
+                    except Exception:
+                        cur_int = 1
+                    # interval *= max(1.0, 2*c/5) * max(1, correct_streak)
+                    base_mult = max(1.0, (2.0 * float(confidence) / 5.0))
+                    mult = base_mult * max(1, new_streak)
+                    calc = max(1.0, float(cur_int) * mult)
+                    new_int = max(1, int(round(calc)))
+                    mins = int(new_int) * 10
+                    cur.execute(
+                        "UPDATE quiz_questions SET interval = %s, last_reviewed = NOW(), next_review = NOW() + (%s || ' minutes')::interval WHERE id = %s",
+                        (new_int, mins, qid),
+                    )
+                # If confidence not provided yet, defer interval update until confidence-only request
+            else:
+                # Incorrect answer: interval = 1, schedule immediately
+                cur.execute(
+                    "UPDATE quiz_questions SET interval = 1, last_reviewed = NOW(), next_review = NOW() WHERE id = %s",
+                    (qid,),
+                )
+                # reset streak on incorrect
+                cur.execute(
+                    "UPDATE quiz_questions SET correct_streak = 0 WHERE id = %s",
+                    (qid,),
+                )
+                # Decrease topic difficulty by 0.2 if topic available
+                topic_key = (topic or "").strip()
+                if topic_key:
+                    try:
+                        cur.execute("SELECT topic_difficulty FROM quizzes WHERE id = %s", (quiz_id,))
+                        td_row = cur.fetchone()
+                        cur_map = {}
+                        if td_row and td_row[0]:
+                            try:
+                                cur_map = dict(td_row[0]) if isinstance(td_row[0], dict) else json.loads(td_row[0])
+                            except Exception:
+                                cur_map = {}
+                        cur_val = float(cur_map.get(topic_key, 0.0) or 0.0)
+                        new_val = cur_val - 0.2
+                        cur.execute(
+                            "UPDATE quizzes SET topic_difficulty = COALESCE(topic_difficulty, '{}'::jsonb) || jsonb_build_object(%s, %s) WHERE id = %s",
+                            (topic_key, new_val, quiz_id),
+                        )
+                    except Exception:
+                        pass
+
+        # Separate path: allow updating confidence only (after answering)
+        elif confidence is not None:
+            cur.execute(
+                "UPDATE quiz_questions SET confidence = %s WHERE id = %s",
+                (confidence, qid),
+            )
+            # If the question was (previously) correct, apply the interval update now using confidence
+            if prev_is_correct is True:
+                try:
+                    cur_int = int(prev_interval) if prev_interval is not None else 1
+                except Exception:
+                    cur_int = 1
+                # Use current streak from DB (prev_streak already reflects current stored value here)
+                base_mult = max(1.0, (2.0 * float(confidence) / 5.0))
+                mult = base_mult * max(1, int(prev_streak or 0))
+                calc = max(1.0, float(cur_int) * mult)
+                new_int = max(1, int(round(calc)))
+                mins = int(new_int) * 10
+                cur.execute(
+                    "UPDATE quiz_questions SET interval = %s, last_reviewed = NOW(), next_review = NOW() + (%s || ' minutes')::interval WHERE id = %s",
+                    (new_int, mins, qid),
+                )
+
+        # If we have confidence and the question is (now or previously) correct, update per-topic difficulty on the quiz
+        # difficulty = 0.1 - (5 - confidence) * (0.08 + (5 - confidence) * 0.02)
+        if confidence is not None and (is_correct is True or prev_is_correct is True):
+            try:
+                conf_val = int(confidence)
+                d = 0.1 - (5 - conf_val) * (0.08 + (5 - conf_val) * 0.02)
+                topic_key = (topic or "").strip()
+                if topic_key:
+                    cur.execute(
+                        "UPDATE quizzes SET topic_difficulty = COALESCE(topic_difficulty, '{}'::jsonb) || jsonb_build_object(%s, %s) WHERE id = %s",
+                        (topic_key, d, quiz_id),
+                    )
+                    # Update topics aggregate average if a matching topic title exists
+                    cur.execute(
+                        """
+                        UPDATE topics
+                        SET
+                          difficulty_sum = COALESCE(difficulty_sum, 0) + %s,
+                          difficulty_count = COALESCE(difficulty_count, 0) + 1,
+                          average_difficulty = (COALESCE(difficulty_sum, 0) + %s) / (COALESCE(difficulty_count, 0) + 1)
+                        WHERE lower(title) = lower(%s)
+                        """,
+                        (d, d, topic_key),
+                    )
+            except Exception:
+                pass
 
         conn.commit()
         cur.close()
-        return jsonify(correct=is_correct, score_incremented=score_incremented), 200
+        return jsonify(correct=is_correct if is_correct is not None else None, score_incremented=score_incremented), 200
     except Exception as e:
         conn.rollback()
         return jsonify(error=str(e)), 500

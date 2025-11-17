@@ -141,6 +141,9 @@ def create_tables():
                 course_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT,
+                average_difficulty DOUBLE PRECISION DEFAULT 0,
+                difficulty_count INTEGER DEFAULT 0,
+                difficulty_sum DOUBLE PRECISION DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (course_id) REFERENCES courses(id)
             );
@@ -158,6 +161,9 @@ def create_tables():
                 created_by INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 score INTEGER,
+                original_count INTEGER,
+                source_summary TEXT,
+                topic_difficulty JSONB NOT NULL DEFAULT '{}'::jsonb,
                 FOREIGN KEY (created_by) REFERENCES users(id),
                 FOREIGN KEY (course_id) REFERENCES courses(id)
             );
@@ -177,6 +183,13 @@ def create_tables():
                 user_answer TEXT,
                 is_correct BOOLEAN,
                 confidence INTEGER,
+                times_correct INTEGER DEFAULT 0,
+                times_seen INTEGER DEFAULT 0,
+                correct_streak INTEGER DEFAULT 0,
+                option_counts INTEGER[] DEFAULT '{}',
+                interval INTEGER,
+                last_reviewed TIMESTAMP,
+                next_review TIMESTAMP,
                 topic TEXT,
                 FOREIGN KEY (quiz_id) REFERENCES quizzes(id),
                 UNIQUE (quiz_id, question_number)
