@@ -21,6 +21,8 @@ import Quiz from "./pages/Quiz";
 import StudyGuide from "./pages/StudyGuide";
 import Flashcards from "./pages/Flashcards";
 import StudySet from "./pages/StudySet";
+import ChatPage from "./pages/Chat";
+import FloatingChatBubble from "@/components/chat/FloatingChatBubble";
 
 const queryClient = new QueryClient();
 
@@ -32,6 +34,7 @@ const App = () => (
       <AuthProvider>
         <Router>
           <CosmicBackdrop />
+          <FloatingChatBubble />
           <Routes>
             {/* Public routes without navbar */}
             <Route path="/" element={<Index />} />
@@ -135,6 +138,18 @@ const App = () => (
                 <SessionProtectedRoute>
                   <ProtectedLayout>
                     <Settings />
+                  </ProtectedLayout>
+                </SessionProtectedRoute>
+              }
+            />
+
+            {/* Chat route */}
+            <Route
+              path="/chat"
+              element={
+                <SessionProtectedRoute>
+                  <ProtectedLayout>
+                    <ChatPage />
                   </ProtectedLayout>
                 </SessionProtectedRoute>
               }

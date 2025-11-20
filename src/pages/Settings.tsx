@@ -19,6 +19,9 @@ type SettingsShape = {
   ai: {
     personalized: boolean;
     useHistory: boolean;
+    explainLike5?: boolean;
+    detailed?: boolean;
+    tutorNoAnswer?: boolean;
   };
   notifications: {
     quizReminders: boolean;
@@ -34,7 +37,7 @@ type SettingsShape = {
 
 const DEFAULTS: SettingsShape = {
   privacy: { showProfile: true, shareNotes: false, shareDecks: false },
-  ai: { personalized: true, useHistory: true },
+  ai: { personalized: true, useHistory: true, explainLike5: false, detailed: false, tutorNoAnswer: false },
   notifications: { quizReminders: true, streak: true, studyTips: true },
   system: { language: "en-US", timeZone: "UTC", dateFormat: "MM/DD/YYYY" },
 };
@@ -250,6 +253,36 @@ const Settings = () => {
                         <Switch
                           checked={settings.ai.useHistory}
                           onCheckedChange={(v) => setSettings((s) => ({ ...s, ai: { ...s.ai, useHistory: v } }))}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between p-3 rounded-lg bg-[#4C1D3D]/60 border border-pink-700/30">
+                        <div>
+                          <p className="text-[#FFBB94] font-medium">Explain like I'm 5</p>
+                          <p className="text-pink-200 text-sm">Use simple words, short sentences, and everyday examples</p>
+                        </div>
+                        <Switch
+                          checked={!!settings.ai.explainLike5}
+                          onCheckedChange={(v) => setSettings((s) => ({ ...s, ai: { ...s.ai, explainLike5: v } }))}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between p-3 rounded-lg bg-[#4C1D3D]/60 border border-pink-700/30">
+                        <div>
+                          <p className="text-[#FFBB94] font-medium">Detailed explanations</p>
+                          <p className="text-pink-200 text-sm">Be thorough and step-by-step with caveats</p>
+                        </div>
+                        <Switch
+                          checked={!!settings.ai.detailed}
+                          onCheckedChange={(v) => setSettings((s) => ({ ...s, ai: { ...s.ai, detailed: v } }))}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between p-3 rounded-lg bg-[#4C1D3D]/60 border border-pink-700/30">
+                        <div>
+                          <p className="text-[#FFBB94] font-medium">Tutor that can't provide the answer</p>
+                          <p className="text-pink-200 text-sm">Socratic style: ask guiding questions, avoid final answer</p>
+                        </div>
+                        <Switch
+                          checked={!!settings.ai.tutorNoAnswer}
+                          onCheckedChange={(v) => setSettings((s) => ({ ...s, ai: { ...s.ai, tutorNoAnswer: v } }))}
                         />
                       </div>
                       <div className="pt-2 flex gap-3">

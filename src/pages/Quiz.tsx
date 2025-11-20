@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { Brain, CheckCircle2, XCircle, Sparkles, RotateCcw } from "lucide-react";
+import { sendChat } from "@/lib/chatApi";
 
 // Types
 type QuizSize = "small" | "medium" | "large" | "comprehensive";
@@ -12,6 +13,8 @@ type QuizQuestion = {
   question: string;
   options: string[]; // 4 options
   correctIndex: number; // 0..3
+  userAnswer?: string | null;
+  isCorrect?: boolean | null;
 };
 
 type QuizResponse = {
@@ -19,7 +22,7 @@ type QuizResponse = {
 };
 
 type ResumeQuizResponse = {
-  questions?: Array<{ id: number; question: string; options: string[]; correctIndex: number | null }>;
+  questions?: Array<{ id: number; question: string; options: string[]; correctIndex: number | null; user_answer?: string | null; is_correct?: boolean | null }>;
   next_unanswered_index?: number;
   score?: number;
   error?: string;
@@ -35,6 +38,11 @@ function parseContentResp(u: unknown): ContentResp {
     };
   }
   return {};
+}
+
+function truncateToSentences(text: string, maxSentences: number): string {
+  const parts = text.split(/(?<=[.!?])\s+/);
+  return parts.slice(0, maxSentences).join(" ").trim();
 }
 
 // Simple checkbox combobox for multi-select
@@ -123,7 +131,7 @@ export default function Quiz() {
   const [size, setSize] = useState<QuizSize>("small");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const location = useLocation() as { state?: { summary?: string; quizId?: number } };
+  const location = useLocation() as { state?: { summary?: string; quizId?: number; noteId?: number } };
   const navigate = useNavigate();
   // Multi-select data
   const [allNotes, setAllNotes] = useState<Array<{ id: number; title: string }>>([]);
@@ -140,6 +148,14 @@ export default function Quiz() {
   const [score, setScore] = useState(0);
   const [quizId, setQuizId] = useState<number | null>(null);
   const [questionIds, setQuestionIds] = useState<number[]>([]);
+  const [autoExplain, setAutoExplain] = useState(false);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explaining, setExplaining] = useState(false);
+  const [explainError, setExplainError] = useState<string | null>(null);
+  const [savingQuiz, setSavingQuiz] = useState(false);
+  const [saveQuizError, setSaveQuizError] = useState<string | null>(null);
+  const [saveQuizSuccess, setSaveQuizSuccess] = useState(false);
+
   // Derived
   const current = questions ? questions[idx] : null;
   const total = questions ? questions.length : 0;
@@ -156,7 +172,12 @@ export default function Quiz() {
           ]);
           if (nRes.ok) {
             const n = await nRes.json();
-            setAllNotes(((n?.items as ComboOption[]) || []).map(x => ({ id: x.id, title: x.title })));
+            const noteItems = ((n?.items as ComboOption[]) || []).map(x => ({ id: x.id, title: x.title }));
+            setAllNotes(noteItems);
+            const navNoteId = location.state?.noteId;
+            if (typeof navNoteId === "number" && noteItems.some(opt => opt.id === navNoteId)) {
+              setSelectedNoteIds(ids => (ids.length ? ids : [navNoteId]));
+            }
           }
           if (sRes.ok) {
             const s = await sRes.json();
@@ -183,12 +204,14 @@ export default function Quiz() {
               return;
             }
             const serverQs = (data?.questions || []) as Array<{
-              id: number; question: string; options: string[]; correctIndex: number | null;
+              id: number; question: string; options: string[]; correctIndex: number | null; user_answer?: string | null; is_correct?: boolean | null;
             }>;
             const mapped: QuizQuestion[] = serverQs.map(q => ({
               question: q.question,
               options: q.options || [],
               correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0,
+              userAnswer: q.user_answer ?? null,
+              isCorrect: typeof q.is_correct === "boolean" ? q.is_correct : null,
             }));
             setQuestions(mapped.length ? mapped : null);
             setQuizId(qid);
@@ -196,9 +219,21 @@ export default function Quiz() {
             const nextIdx = Math.max(0, Math.min((data?.next_unanswered_index ?? 0), Math.max(0, mapped.length)));
             setIdx(nextIdx);
             setScore(Number(data?.score ?? 0));
+            const nextQ = mapped[nextIdx];
+            if (nextQ && nextQ.userAnswer) {
+              const sel = nextQ.options.indexOf(nextQ.userAnswer);
+              if (sel >= 0) {
+                setSelected(sel);
+                setFeedback(nextQ.isCorrect ? "correct" : "incorrect");
+              }
+            }
             setLoading(false);
-          } catch (e: any) {
-            setError(e?.message || "Failed to load quiz");
+          } catch (e: unknown) {
+            if (e instanceof Error) {
+              setError(e.message || "Failed to load quiz");
+            } else {
+              setError("Failed to load quiz");
+            }
             setLoading(false);
           }
         })();
@@ -253,24 +288,31 @@ export default function Quiz() {
       }
       const payloadSummary = combined.trim();
       const res = await fetch("/api/quiz", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ summary: payloadSummary, size }),
-    });
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ summary: payloadSummary, size }),
+      });
       const data = (await res
         .json()
         .catch(() => ({}))) as (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string };
       if (!res.ok) {
-        throw new Error((data as any)?.error || `Quiz generation failed (${res.status})`);
+        const message = "error" in data && typeof data.error === "string"
+          ? data.error
+          : `Quiz generation failed (${res.status})`;
+        throw new Error(message);
       }
       const qs = (data as QuizResponse).questions || [];
       if (!qs.length) throw new Error("No questions returned");
       setQuizId("quiz_id" in data && typeof data.quiz_id === "number" ? data.quiz_id : null);
       setQuestionIds("question_ids" in data && Array.isArray(data.question_ids) ? (data.question_ids as number[]) : []);
       setQuestions(qs);
-    } catch (e: any) {
-      setError(e?.message || "Quiz request failed");
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setError(e.message || "Quiz request failed");
+      } else {
+        setError("Quiz request failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -281,6 +323,19 @@ export default function Quiz() {
     const correct = selected === current.correctIndex;
     setFeedback(correct ? "correct" : "incorrect");
     if (correct) setScore((s) => s + 1);
+
+    setQuestions((prev) => {
+      if (!prev) return prev;
+      const copy = [...prev];
+      const q = copy[idx];
+      if (!q) return prev;
+      copy[idx] = {
+        ...q,
+        userAnswer: current.options[selected],
+        isCorrect: correct,
+      };
+      return copy;
+    });
 
     // Persist answer in background
     try {
@@ -299,6 +354,10 @@ export default function Quiz() {
     } catch (e) {
       console.warn("Failed to persist quiz answer", e);
     }
+
+    if (autoExplain && current) {
+      void requestExplanation("explain");
+    }
   };
 
   const nextQuestion = () => {
@@ -306,6 +365,15 @@ export default function Quiz() {
     const next = idx + 1;
     if (next < questions.length) {
       setIdx(next);
+      const q = questions[next];
+      if (q && q.userAnswer) {
+        const sel = q.options.indexOf(q.userAnswer);
+        if (sel >= 0) {
+          setSelected(sel);
+          setFeedback(q.isCorrect ? "correct" : "incorrect");
+          return;
+        }
+      }
       setSelected(null);
       setFeedback(null);
     }
@@ -323,8 +391,16 @@ export default function Quiz() {
           const getRes = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
           const data = (await getRes.json().catch(() => ({}))) as unknown as ResumeQuizResponse | { error?: string };
           if (getRes.ok && data && typeof data === "object" && "questions" in data) {
-            const serverQs = (data.questions || []) as Array<{ id: number; question: string; options: string[]; correctIndex: number | null; }>;
-            const mapped: QuizQuestion[] = serverQs.map(q => ({ question: q.question, options: q.options || [], correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0 }));
+            const serverQs = (data.questions || []) as Array<{
+              id: number; question: string; options: string[]; correctIndex: number | null; user_answer?: string | null; is_correct?: boolean | null;
+            }>;
+            const mapped: QuizQuestion[] = serverQs.map(q => ({
+              question: q.question,
+              options: q.options || [],
+              correctIndex: typeof q.correctIndex === "number" ? q.correctIndex : 0,
+              userAnswer: q.user_answer ?? null,
+              isCorrect: typeof q.is_correct === "boolean" ? q.is_correct : null,
+            }));
             setQuestions(mapped.length ? mapped : null);
             setQuestionIds(serverQs.map(q => q.id));
             setIdx(0);
@@ -355,6 +431,106 @@ export default function Quiz() {
     setSelected(null);
     setFeedback(null);
     setScore(0);
+    setSaveQuizError(null);
+    setSaveQuizSuccess(false);
+  };
+
+  const saveQuiz = async () => {
+    if (!quizId) {
+      setSaveQuizError("This quiz cannot be saved because its ID is missing.");
+      return;
+    }
+    setSavingQuiz(true);
+    setSaveQuizError(null);
+    setSaveQuizSuccess(false);
+    try {
+      const defaultTitle = `Quiz #${quizId}`;
+      const res = await fetch(`/api/quizzes/${quizId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ title: defaultTitle }),
+      });
+      const data = await res.json().catch(() => ({} as { error?: string }));
+      if (!res.ok) {
+        setSaveQuizError((data && data.error) || "Failed to save quiz.");
+        return;
+      }
+      setSaveQuizSuccess(true);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to save quiz.";
+      setSaveQuizError(msg);
+    } finally {
+      setSavingQuiz(false);
+    }
+  };
+
+  const requestExplanation = async (mode: "tutor" | "explain") => {
+    if (!current) return;
+    setExplaining(true);
+    setExplainError(null);
+    setExplanation(null);
+    const userAnswer = selected != null && current.options[selected] ? current.options[selected] : null;
+    const lines: string[] = [];
+    lines.push("I am working on a multiple-choice quiz question.");
+    lines.push("Explain the reasoning in at most 2 short sentences. Do not write a long paragraph or bullet list.");
+    lines.push("Question:");
+    lines.push(current.question);
+    lines.push("");
+    lines.push("Options:");
+    current.options.forEach((opt, i) => {
+      lines.push(`${i + 1}. ${opt}`);
+    });
+    if (userAnswer) {
+      lines.push("");
+      lines.push(`My selected answer: ${userAnswer}`);
+      if (feedback === "correct") {
+        lines.push("I answered correctly.");
+      } else if (feedback === "incorrect") {
+        lines.push("I answered incorrectly.");
+      }
+    }
+    const prompt = lines.join("\n");
+    let full = "";
+    try {
+      await sendChat(
+        [{ role: "user", content: prompt }],
+        mode === "tutor"
+          ? { tutorNoAnswer: true }
+          : {},
+        {
+          onToken: (delta) => {
+            full += delta;
+            setExplanation((prev) => (prev ?? "") + delta);
+          },
+          onDone: () => {
+            setExplaining(false);
+            if (!full) {
+              setExplainError("The assistant did not return an explanation. Please try again.");
+            } else {
+              setExplanation(truncateToSentences(full, 2));
+            }
+          },
+          onError: (err) => {
+            setExplaining(false);
+            if (err.message === "auth") {
+              setExplainError("Sign in to use the assistant.");
+            } else if (err.message === "rate") {
+              setExplainError("You are being rate limited. Please wait a moment and try again.");
+            } else {
+              setExplainError(err.message || "The assistant encountered an error.");
+            }
+          },
+        }
+      );
+    } catch (e: unknown) {
+      setExplaining(false);
+      if (e instanceof Error) {
+        setExplainError(e.message || "The assistant encountered an error.");
+      } else {
+        setExplainError("The assistant encountered an error.");
+      }
+    }
   };
 
   return (
@@ -464,6 +640,41 @@ export default function Quiz() {
                   <div className="prose prose-invert max-w-none">
                     <MarkdownMathRenderer text={current.question} />
                   </div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-xs text-pink-100">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 text-[#FFBB94] hover:text-white underline decoration-[#FFBB94]"
+                      onClick={() => {
+                        if (!current) return;
+                        const lines: string[] = [];
+                        lines.push("I am working on a multiple-choice quiz question.");
+                        lines.push("Please give a short, concise explanation (ideally 2–3 sentences). Do not write a long essay.");
+                        lines.push("Question:");
+                        lines.push(current.question);
+                        lines.push("");
+                        lines.push("Options:");
+                        current.options.forEach((opt, i) => {
+                          lines.push(`${i + 1}. ${opt}`);
+                        });
+                        const prompt = lines.join("\n");
+                        window.dispatchEvent(new CustomEvent("learnnova:openChatWithPrompt", { detail: { prompt } }));
+                      }}
+                      disabled={explaining}
+                    >
+                      <Brain className="h-4 w-4" />
+                      Need help? Ask the assistant
+                    </button>
+
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        className="accent-[#FB9590]"
+                        checked={autoExplain}
+                        onChange={(e) => setAutoExplain(e.target.checked)}
+                      />
+                      <span>Explain each question after I answer</span>
+                    </label>
+                  </div>
                   <div className="space-y-3">
                     {current.options.map((opt, i) => {
                       const isSelected = selected === i;
@@ -528,6 +739,25 @@ export default function Quiz() {
                           )}
                         </p>
                       </div>
+                      {(explanation || explaining || explainError) && (
+                        <div className="p-4 rounded-lg bg-[#852E4E]/40 border border-pink-700/40 space-y-2">
+                          <div className="flex items-center gap-2 text-pink-100 text-sm font-semibold">
+                            <Brain className="h-4 w-4" />
+                            <span>Assistant explanation</span>
+                          </div>
+                          {explaining && (
+                            <p className="text-xs text-pink-100">Generating explanation…</p>
+                          )}
+                          {explanation && (
+                            <div className="prose prose-invert max-w-none text-sm">
+                              <MarkdownMathRenderer text={explanation} />
+                            </div>
+                          )}
+                          {explainError && (
+                            <p className="text-xs text-red-200">{explainError}</p>
+                          )}
+                        </div>
+                      )}
                       {idx < total - 1 ? (
                         <Button
                           onClick={nextQuestion}
@@ -549,6 +779,19 @@ export default function Quiz() {
                                "Keep studying, you've got this! 📚"}
                             </p>
                           </div>
+                          <Button
+                            onClick={saveQuiz}
+                            disabled={savingQuiz || !quizId}
+                            className="w-full bg-[#852E4E] hover:bg-[#A33757] text-white font-semibold py-4 disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {savingQuiz ? "Saving quiz..." : "Save Quiz to Dashboard"}
+                          </Button>
+                          {saveQuizSuccess && (
+                            <p className="text-sm text-green-200 text-center">Quiz saved. You can find it under Dashboard → Quizzes.</p>
+                          )}
+                          {saveQuizError && (
+                            <p className="text-sm text-red-200 text-center">{saveQuizError}</p>
+                          )}
                           <Button
                             onClick={restart}
                             className="w-full bg-gradient-to-r from-[#852E4E] to-[#A33757] hover:from-[#A33757] hover:to-[#852E4E] text-white font-semibold py-4"

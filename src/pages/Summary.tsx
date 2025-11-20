@@ -4,8 +4,32 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { FileText, Brain, BookOpen, Upload, Sparkles, AlertCircle } from "lucide-react";
 
+type UploadResult = {
+  extracted_text?: string;
+  filename?: string;
+  topics?: string[];
+};
+
+type SummaryApiResponse = {
+  items?: { id: number }[];
+};
+
+type NotesApiResponse = {
+  items?: { id: number; title?: string | null }[];
+};
+
+type CoursesApiResponse = {
+  courses?: { id: number; name?: string | null }[];
+};
+
+type SummaryLocationState = {
+  summary?: string;
+  result?: UploadResult;
+  extracted_text?: string;
+};
+
 export default function Summary() {
-  const location = useLocation() as { state?: { summary?: string; result?: any; extracted_text?: string } };
+  const location = useLocation() as { state?: SummaryLocationState };
   const summary = location.state?.summary;
   const result = location.state?.result;
   const extractedFromState = location.state?.extracted_text ?? result?.extracted_text ?? "";
@@ -25,6 +49,12 @@ export default function Summary() {
   const extractedText: string = useMemo(() => String(extractedFromState || ""), [extractedFromState]);
   const toTitleCase = (s: string) => s.split(/\s+/).map(w => w ? (w[0].toUpperCase() + w.slice(1)) : w).join(" ");
   const [newTopic, setNewTopic] = useState("");
+  const [allNotes, setAllNotes] = useState<Array<{ id: number; title: string }>>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [allSummaries, setAllSummaries] = useState<Array<{ id: number; title: string }>>([]);
+  const [summariesLoading, setSummariesLoading] = useState(false);
+  const [summariesError, setSummariesError] = useState<string | null>(null);
   const addTopic = () => {
     const raw = newTopic.trim();
     if (!raw) return;
@@ -52,14 +82,82 @@ export default function Summary() {
           setCourses([]);
           return;
         }
-        const [sJson, nJson, cJson] = await Promise.all([sRes.json(), nRes.json(), cRes.json()]);
-        const nextS = (Array.isArray(sJson.items) && sJson.items.length > 0) ? (Math.max(...sJson.items.map((x: any) => x.id)) + 1) : 1;
-        const nextN = (Array.isArray(nJson.items) && nJson.items.length > 0) ? (Math.max(...nJson.items.map((x: any) => x.id)) + 1) : 1;
+        const [sJson, nJson, cJson]: [SummaryApiResponse, NotesApiResponse, CoursesApiResponse] = await Promise.all([
+          sRes.json(),
+          nRes.json(),
+          cRes.json(),
+        ]);
+        const nextS = (Array.isArray(sJson.items) && sJson.items.length > 0) ? (Math.max(...sJson.items.map((x) => x.id)) + 1) : 1;
+        const nextN = (Array.isArray(nJson.items) && nJson.items.length > 0) ? (Math.max(...nJson.items.map((x) => x.id)) + 1) : 1;
         setNextSummaryNumber(nextS);
         setNextNoteNumber(nextN);
         const list = Array.isArray(cJson.courses) ? cJson.courses : [];
-        setCourses(list.map((c: any) => ({ id: Number(c.id), name: String(c.name || "") })));
-      } catch {}
+        setCourses(list.map((c) => ({ id: Number(c.id), name: String(c.name || "") })));
+      } catch {
+        return;
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  // Load saved notes for sidebar / reuse
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        setNotesLoading(true);
+        setNotesError(null);
+        const res = await fetch("/api/all_notes", { credentials: "include" });
+        const raw = await res.json().catch(() => ({} as { items?: unknown }));
+        if (!mounted) return;
+        if (!res.ok) {
+          throw new Error((raw as { error?: string })?.error || `Failed to load notes (${res.status})`);
+        }
+        const itemsUnknown = (raw as { items?: unknown }).items;
+        const list = Array.isArray(itemsUnknown)
+          ? (itemsUnknown as NotesApiResponse["items"])
+              ?.filter((x): x is { id: number; title?: string | null } => !!x && typeof x.id === "number")
+              .map((x) => ({ id: x.id, title: String(x.title || `Note #${x.id}`) })) ?? []
+          : [];
+        setAllNotes(list);
+      } catch (e: unknown) {
+        if (!mounted) return;
+        setAllNotes([]);
+        setNotesError(e instanceof Error ? e.message : "Failed to load notes");
+      } finally {
+        if (mounted) setNotesLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  // Load saved summaries for sidebar / reuse
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        setSummariesLoading(true);
+        setSummariesError(null);
+        const res = await fetch("/api/all_summaries", { credentials: "include" });
+        const raw = await res.json().catch(() => ({} as { items?: unknown }));
+        if (!mounted) return;
+        if (!res.ok) {
+          throw new Error((raw as { error?: string })?.error || `Failed to load summaries (${res.status})`);
+        }
+        const itemsUnknown = (raw as { items?: unknown }).items;
+        const list = Array.isArray(itemsUnknown)
+          ? (itemsUnknown as { id: number; title?: string | null }[])
+              ?.filter((x): x is { id: number; title?: string | null } => !!x && typeof x.id === "number")
+              .map((x) => ({ id: x.id, title: String(x.title || `Summary #${x.id}`) })) ?? []
+          : [];
+        setAllSummaries(list);
+      } catch (e: unknown) {
+        if (!mounted) return;
+        setAllSummaries([]);
+        setSummariesError(e instanceof Error ? e.message : "Failed to load summaries");
+      } finally {
+        if (mounted) setSummariesLoading(false);
+      }
     })();
     return () => { mounted = false; };
   }, []);
@@ -83,8 +181,9 @@ export default function Summary() {
         const j = await res.json();
         setSavedSummaryId(j.id ?? null);
       }
-    } catch {}
-    finally {
+    } catch {
+      return;
+    } finally {
       setSaving(false);
     }
   };
@@ -104,16 +203,26 @@ export default function Summary() {
       });
       if (res.ok) {
         const j = await res.json();
-        setSavedNoteId(j.id ?? null);
+        const nid = j.id ?? null;
+        setSavedNoteId(nid ?? null);
+        if (nid) {
+          const noteTitle = j.title ?? (titleInput.trim() || (`Note #${nextNoteNumber ?? ""}`)).trim();
+          setAllNotes(prev => [{ id: nid, title: noteTitle }, ...prev.filter(n => n.id !== nid)]);
+        }
       }
-    } catch {}
-    finally {
+    } catch {
+      return;
+    } finally {
       setSaving(false);
     }
   };
 
   const quizMe = async () => {
     if (!summary) return;
+    // Auto-save note before proceeding so it appears in quiz selectors
+    if (!savedNoteId && extractedText) {
+      await ensureNoteSaved();
+    }
     // Auto-save summary before proceeding if not saved
     if (!savedSummaryId) {
       await ensureSummarySaved();
@@ -124,12 +233,18 @@ export default function Summary() {
         "lastUploadResult",
         JSON.stringify({ summary })
       );
-    } catch {}
-    navigate("/quiz");
+    } catch {
+      return;
+    }
+    navigate("/quiz", { state: { summary } });
   };
 
   const studyGuide = async () => {
     if (!summary) return;
+    // Auto-save note before proceeding so it appears in study guide selectors
+    if (!savedNoteId && extractedText) {
+      await ensureNoteSaved();
+    }
     // Auto-save summary before proceeding if not saved
     if (!savedSummaryId) {
       await ensureSummarySaved();
@@ -139,7 +254,9 @@ export default function Summary() {
         "lastUploadResult",
         JSON.stringify({ summary })
       );
-    } catch {}
+    } catch {
+      return;
+    }
     navigate("/study-guide");
   };
 
@@ -241,7 +358,9 @@ export default function Summary() {
                             setSelectedCourseId(created.id);
                             setNewCourseName('');
                           }
-                        } catch {}
+                        } catch {
+                          return;
+                        }
                       }}}
                       placeholder="Add course"
                       className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-[#852E4E]/20 border border-pink-700/40 text-pink-100 placeholder-pink-300/50 focus:outline-none focus:ring-2 focus:ring-pink-600/40"
@@ -260,7 +379,9 @@ export default function Summary() {
                             setSelectedCourseId(created.id);
                             setNewCourseName('');
                           }
-                        } catch {}
+                        } catch {
+                          return;
+                        }
                       }}
                       className="px-3 py-2 rounded-lg bg-[#A33757] hover:bg-[#DC586D] text-white"
                     >
@@ -360,6 +481,117 @@ export default function Summary() {
                   <Upload className="h-5 w-5" />
                   Upload Another File
                 </Link>
+              </CardContent>
+            </Card>
+
+            {/* Saved Notes Sidebar/Card */}
+            <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <div className="p-2 bg-[#852E4E]/40 rounded-lg">
+                    <FileText className="h-5 w-5 text-[#FB9590]" />
+                  </div>
+                  <span className="text-pink-100">Saved Notes</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {notesError && (
+                  <div className="text-sm text-red-300">{notesError}</div>
+                )}
+                {notesLoading && !notesError && (
+                  <div className="text-sm text-pink-200">Loading notes…</div>
+                )}
+                {!notesLoading && !notesError && allNotes.length === 0 && (
+                  <div className="text-sm text-pink-200">No saved notes yet.</div>
+                )}
+                {!notesLoading && allNotes.length > 0 && (
+                  <ul className="space-y-2">
+                    {allNotes.slice(0, 8).map((n) => (
+                      <li
+                        key={n.id}
+                        className="flex items-center justify-between p-2 rounded bg-[#852E4E]/30 border border-pink-700/30 text-sm"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span className="truncate text-pink-100">{n.title || `Note #${n.id}`}</span>
+                          <span className="ml-1 text-[11px] px-2 py-1 rounded-full border border-pink-600/60 text-pink-200 flex-shrink-0">
+                            ID {n.id}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => navigate("/quiz", { state: { noteId: n.id } })}
+                            className="px-2 py-1 text-[11px] rounded bg-[#852E4E] hover:bg-[#A33757] text-[#FFBB94] border border-pink-700/60"
+                          >
+                            Quiz
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => navigate("/study-guide", { state: { noteId: n.id } })}
+                            className="px-2 py-1 text-[11px] rounded bg-transparent hover:bg-[#852E4E] text-pink-100 border border-pink-700/60"
+                          >
+                            Guide
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <div className="p-2 bg-[#852E4E]/40 rounded-lg">
+                    <BookOpen className="h-5 w-5 text-[#FB9590]" />
+                  </div>
+                  <span className="text-pink-100">Saved Summaries</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {summariesError && (
+                  <div className="text-sm text-red-300">{summariesError}</div>
+                )}
+                {summariesLoading && !summariesError && (
+                  <div className="text-sm text-pink-200">Loading summaries…</div>
+                )}
+                {!summariesLoading && !summariesError && allSummaries.length === 0 && (
+                  <div className="text-sm text-pink-200">No saved summaries yet.</div>
+                )}
+                {!summariesLoading && allSummaries.length > 0 && (
+                  <ul className="space-y-2">
+                    {allSummaries.slice(0, 8).map((s) => (
+                      <li
+                        key={s.id}
+                        className="flex items-center justify-between p-2 rounded bg-[#852E4E]/30 border border-pink-700/30 text-sm"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span className="truncate text-pink-100">{s.title || `Summary #${s.id}`}</span>
+                          <span className="ml-1 text-[11px] px-2 py-1 rounded-full border border-pink-600/60 text-pink-200 flex-shrink-0">
+                            ID {s.id}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => navigate("/quiz", { state: { summaryId: s.id } })}
+                            className="px-2 py-1 text-[11px] rounded bg-[#852E4E] hover:bg-[#A33757] text-[#FFBB94] border border-pink-700/60"
+                          >
+                            Quiz
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => navigate("/study-guide", { state: { summaryId: s.id } })}
+                            className="px-2 py-1 text-[11px] rounded bg-transparent hover:bg-[#852E4E] text-pink-100 border border-pink-700/60"
+                          >
+                            Guide
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </CardContent>
             </Card>
           </div>
