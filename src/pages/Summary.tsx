@@ -4,8 +4,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { FileText, Brain, BookOpen, Upload, Sparkles, AlertCircle } from "lucide-react";
 
+type SummaryResult = {
+  extracted_text?: string;
+  filename?: string;
+  topics?: string[];
+};
+
+type SummaryLocationState = {
+  summary?: string;
+  result?: SummaryResult;
+  extracted_text?: string;
+};
+
 export default function Summary() {
-  const location = useLocation() as { state?: { summary?: string; result?: any; extracted_text?: string } };
+  const location = useLocation() as { state?: SummaryLocationState };
   const summary = location.state?.summary;
   const result = location.state?.result;
   const extractedFromState = location.state?.extracted_text ?? result?.extracted_text ?? "";
@@ -53,13 +65,19 @@ export default function Summary() {
           return;
         }
         const [sJson, nJson, cJson] = await Promise.all([sRes.json(), nRes.json(), cRes.json()]);
-        const nextS = (Array.isArray(sJson.items) && sJson.items.length > 0) ? (Math.max(...sJson.items.map((x: any) => x.id)) + 1) : 1;
-        const nextN = (Array.isArray(nJson.items) && nJson.items.length > 0) ? (Math.max(...nJson.items.map((x: any) => x.id)) + 1) : 1;
+        const nextS = (Array.isArray(sJson.items) && sJson.items.length > 0)
+          ? (Math.max(...sJson.items.map((x: { id: number }) => x.id)) + 1)
+          : 1;
+        const nextN = (Array.isArray(nJson.items) && nJson.items.length > 0)
+          ? (Math.max(...nJson.items.map((x: { id: number }) => x.id)) + 1)
+          : 1;
         setNextSummaryNumber(nextS);
         setNextNoteNumber(nextN);
         const list = Array.isArray(cJson.courses) ? cJson.courses : [];
-        setCourses(list.map((c: any) => ({ id: Number(c.id), name: String(c.name || "") })));
-      } catch {}
+        setCourses(list.map((c: { id: number; name?: string }) => ({ id: Number(c.id), name: String(c.name || "") })));
+      } catch (error) {
+        console.error("Failed to load summaries/notes/courses", error);
+      }
     })();
     return () => { mounted = false; };
   }, []);
@@ -83,7 +101,9 @@ export default function Summary() {
         const j = await res.json();
         setSavedSummaryId(j.id ?? null);
       }
-    } catch {}
+    } catch (error) {
+      console.error("Failed to save summary", error);
+    }
     finally {
       setSaving(false);
     }
@@ -106,7 +126,9 @@ export default function Summary() {
         const j = await res.json();
         setSavedNoteId(j.id ?? null);
       }
-    } catch {}
+    } catch (error) {
+      console.error("Failed to save note", error);
+    }
     finally {
       setSaving(false);
     }
@@ -124,7 +146,9 @@ export default function Summary() {
         "lastUploadResult",
         JSON.stringify({ summary })
       );
-    } catch {}
+    } catch (error) {
+      console.error("Failed to persist summary for quiz", error);
+    }
     navigate("/quiz");
   };
 
@@ -139,7 +163,9 @@ export default function Summary() {
         "lastUploadResult",
         JSON.stringify({ summary })
       );
-    } catch {}
+    } catch (error) {
+      console.error("Failed to persist summary for study guide", error);
+    }
     navigate("/study-guide");
   };
 
@@ -241,7 +267,9 @@ export default function Summary() {
                             setSelectedCourseId(created.id);
                             setNewCourseName('');
                           }
-                        } catch {}
+                        } catch (error) {
+                          console.error("Failed to create course from Enter key", error);
+                        }
                       }}}
                       placeholder="Add course"
                       className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-[#852E4E]/20 border border-pink-700/40 text-pink-100 placeholder-pink-300/50 focus:outline-none focus:ring-2 focus:ring-pink-600/40"
@@ -260,7 +288,9 @@ export default function Summary() {
                             setSelectedCourseId(created.id);
                             setNewCourseName('');
                           }
-                        } catch {}
+                        } catch (error) {
+                          console.error("Failed to create course from button click", error);
+                        }
                       }}
                       className="px-3 py-2 rounded-lg bg-[#A33757] hover:bg-[#DC586D] text-white"
                     >
