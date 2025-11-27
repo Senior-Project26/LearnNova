@@ -50,6 +50,7 @@ export const Navigation = () => {
             {[
               { path: "/study", label: "Study", icon: <BookOpen className="w-4 h-4 mr-2" /> },
               { path: "/dashboard", label: "Dashboard" },
+              { path: "/resources", label: "Resources" },
               { path: "/profile", label: "Profile", icon: <User className="w-4 h-4 mr-2" /> },
               { path: "/settings", label: "Settings", icon: <Settings className="w-4 h-4 mr-2" /> },
             ].map((item) => (
@@ -120,6 +121,7 @@ export const Navigation = () => {
             {[
               { path: "/study", label: "Study", icon: <BookOpen className="w-4 h-4 mr-2" /> },
               { path: "/dashboard", label: "Dashboard" },
+              { path: "/resources", label: "Resources" },
               { path: "/profile", label: "Profile", icon: <User className="w-4 h-4 mr-2" /> },
               { path: "/settings", label: "Settings", icon: <Settings className="w-4 h-4 mr-2" /> },
             ].map((item) => (
@@ -150,10 +152,14 @@ export const Navigation = () => {
                         method: "POST",
                         credentials: "include",
                       });
-                    } catch {}
+                    } catch (e) {
+                      console.warn("Failed to log out from backend session", e);
+                    }
                     try {
                       await signOutUser();
-                    } catch {}
+                    } catch (e) {
+                      console.warn("Failed to sign out Firebase auth user", e);
+                    }
                     navigate("/signin", { replace: true });
                   }}
                   className="w-full bg-[#4C1D3D] hover:bg-[#852E4E] text-[#FFBB94] border border-pink-700/40"

@@ -63,7 +63,6 @@ app.config.update(
 # ============================================================================
 
 # Initialize API clients (Study Buddy)
-vision_client = vision.ImageAnnotatorClient()
 gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
@@ -973,7 +972,10 @@ def firebase_login():
 
         conn = get_connection()
         if not conn:
-            return jsonify({"error": "Database connection error"}), 500
+            # No DB available; create a session from Firebase token for local dev
+            session["user_id"] = decoded_token.get("uid") or user_email
+            session["username"] = user_name or (user_email.split("@")[0])
+            return jsonify({"message": "Firebase login verified (no DB)", "username": session["username"]}), 200
         cur = conn.cursor()
         try:
             cur.execute('SELECT id, username FROM users WHERE email = %s', (user_email,))
@@ -2761,7 +2763,7 @@ def list_all_summaries():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, title, topics, course_id, created_at
+            SELECT id, title, course_id, created_at
             FROM summaries
             WHERE user_id = %s
             ORDER BY created_at DESC NULLS LAST, id DESC
@@ -2774,9 +2776,9 @@ def list_all_summaries():
             {
                 "id": r[0],
                 "title": r[1],
-                "topics": (r[2] or []),
-                "course_id": r[3],
-                "created_at": (r[4].isoformat() if r[4] else None),
+                "topics": [],
+                "course_id": r[2],
+                "created_at": (r[3].isoformat() if r[3] else None),
             }
             for r in rows
         ]
@@ -2916,11 +2918,11 @@ def dashboard_quizzes():
               q.topics
             FROM quizzes q
             LEFT JOIN quiz_questions qq ON qq.quiz_id = q.id
-            WHERE q.created_by = %s
+            -- TEMP: show all quizzes regardless of user
+            WHERE 1 = 1
             GROUP BY q.id
             ORDER BY q.created_at DESC NULLS LAST, q.id DESC
-            """,
-            (user_id,),
+            """
         )
         rows = cur.fetchall()
         cur.close()
@@ -3087,6 +3089,305 @@ def ping():
     return jsonify({"message": "Flask backend is running"})
 
 
+# ============================================================================
+# ROUTES - CHAT THREADS (Cloud persistence)
+# ============================================================================
+
+@app.get("/api/chat_threads")
+def list_chat_threads():
+    """List chat threads for the current user (most recent first)."""
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, title, created_at, updated_at
+            FROM chat_threads
+            WHERE user_id = %s
+            ORDER BY updated_at DESC NULLS LAST, id DESC
+            """,
+            (uid,),
+        )
+        rows = cur.fetchall()
+        items = [
+            {
+                "id": r[0],
+                "title": r[1],
+                "created_at": (r[2].isoformat() if r[2] else None),
+                "updated_at": (r[3].isoformat() if r[3] else None),
+            }
+            for r in rows
+        ]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.post("/api/chat_threads")
+def create_chat_thread():
+    """Create a new chat thread for current user."""
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "New Chat").strip() or "New Chat"
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO chat_threads (user_id, title)
+            VALUES (%s, %s)
+            RETURNING id, created_at, updated_at
+            """,
+            (uid, title),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return (
+            jsonify(
+                id=row[0],
+                title=title,
+                created_at=(row[1].isoformat() if row[1] else None),
+                updated_at=(row[2].isoformat() if row[2] else None),
+            ),
+            201,
+        )
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.get("/api/chat_threads/<int:tid>")
+def get_chat_thread(tid: int):
+    """Return a chat thread with its messages for current user."""
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, created_at, updated_at FROM chat_threads WHERE id = %s AND user_id = %s",
+            (tid, uid),
+        )
+        t = cur.fetchone()
+        if not t:
+            return jsonify(error="not found"), 404
+        cur.execute(
+            """
+            SELECT id, role, content, created_at
+            FROM chat_messages
+            WHERE thread_id = %s
+            ORDER BY id ASC
+            """,
+            (tid,),
+        )
+        msgs = cur.fetchall()
+        return (
+            jsonify(
+                id=t[0],
+                title=t[1],
+                created_at=(t[2].isoformat() if t[2] else None),
+                updated_at=(t[3].isoformat() if t[3] else None),
+                messages=[
+                    {
+                        "id": m[0],
+                        "role": m[1],
+                        "content": m[2],
+                        "created_at": (m[3].isoformat() if m[3] else None),
+                    }
+                    for m in msgs
+                ],
+            ),
+            200,
+        )
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.patch("/api/chat_threads/<int:tid>")
+def rename_chat_thread(tid: int):
+    """Rename a chat thread."""
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "New Chat").strip() or "New Chat"
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE chat_threads
+            SET title = %s, updated_at = NOW()
+            WHERE id = %s AND user_id = %s
+            RETURNING id, created_at, updated_at
+            """,
+            (title, tid, uid),
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        return (
+            jsonify(
+                id=row[0],
+                title=title,
+                created_at=(row[1].isoformat() if row[1] else None),
+                updated_at=(row[2].isoformat() if row[2] else None),
+            ),
+            200,
+        )
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.delete("/api/chat_threads/<int:tid>")
+def delete_chat_thread(tid: int):
+    """Delete a chat thread for current user."""
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM chat_threads WHERE id = %s AND user_id = %s", (tid, uid))
+        if cur.rowcount == 0:
+            conn.rollback()
+            return jsonify(error="not found"), 404
+        conn.commit()
+        return ("", 204)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.post("/api/chat_threads/<int:tid>/messages")
+def append_chat_message(tid: int):
+    """Append a chat message to a thread (user or assistant)."""
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    role = str(data.get("role") or "").strip()
+    content = str(data.get("content") or "").strip()
+    if role not in ("system", "user", "assistant"):
+        return jsonify(error="invalid role"), 400
+    if not content:
+        return jsonify(error="empty content"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # ensure thread belongs to user
+        cur.execute("SELECT 1 FROM chat_threads WHERE id = %s AND user_id = %s", (tid, uid))
+        if not cur.fetchone():
+            return jsonify(error="not found"), 404
+        cur.execute(
+            """
+            INSERT INTO chat_messages (thread_id, role, content)
+            VALUES (%s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (tid, role, content),
+        )
+        mid, created_at = cur.fetchone()
+        # bump updated_at on thread
+        cur.execute("UPDATE chat_threads SET updated_at = NOW() WHERE id = %s", (tid,))
+        conn.commit()
+        return (
+            jsonify(id=mid, role=role, content=content, created_at=(created_at.isoformat() if created_at else None)),
+            201,
+        )
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.post("/api/chat")
+def chat_endpoint():
+    """Simple chat endpoint that takes messages and returns a single assistant reply.
+    Expects body: { messages: [{ role: 'user'|'assistant', content: string }], meta?: any }
+    Returns: { message: { role: 'assistant', content: string } }
+    """
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+
+    data = request.get_json(silent=True) or {}
+    msgs = data.get("messages") or []
+    meta = data.get("meta") or {}
+    # Use the latest user message for now
+    content = ""
+    for m in (msgs if isinstance(msgs, list) else []):
+        try:
+            if isinstance(m, dict) and (m.get("role") == "user"):
+                content = str(m.get("content") or "").strip()
+        except Exception:
+            continue
+    if not content:
+        return jsonify(error="empty message"), 400
+
+    try:
+        # Build style instructions from meta flags
+        instructions: list[str] = []
+        if isinstance(meta, dict) and meta.get("explainLike5"):
+            instructions.append(
+                "Explain as if to a 5-year-old. Use simple words, short sentences, concrete everyday examples, and avoid jargon."
+            )
+        if isinstance(meta, dict) and meta.get("detailed"):
+            instructions.append(
+                "Be detailed and step-by-step. Provide clear reasoning, structure, and cover important caveats."
+            )
+        if isinstance(meta, dict) and meta.get("tutorNoAnswer"):
+            instructions.append(
+                "Act as a Socratic tutor. Do not provide the final answer. Ask guiding questions and give incremental hints to help the learner reach the solution."
+            )
+
+        style_prefix = ("\n".join(instructions).strip() + "\n\n") if instructions else ""
+        prompt = f"{style_prefix}{content}"
+
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt,
+        )
+        text = (getattr(resp, "text", None) or "").strip()
+        if not text:
+            text = "I'm sorry, I couldn't generate a response. Please try again."
+        return jsonify(message={"role": "assistant", "content": text}), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
 @app.get("/api/session")
 def get_session_user():
     """Return current Flask session user or 401."""
@@ -3095,6 +3396,168 @@ def get_session_user():
     if not uid:
         return jsonify(error="unauthorized"), 401
     return jsonify(user_id=uid, username=uname), 200
+
+
+@app.get("/api/resources")
+def list_saved_resources():
+    """Return saved learning resources for the current user.
+
+    This backs the "Saved" view on the Learning Resources page.
+    """
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, title, description, type, url
+            FROM saved_resources
+            WHERE user_id = %s
+            ORDER BY id DESC
+            """,
+            (uid,),
+        )
+        rows = cur.fetchall()
+        items = [
+            {
+                "id": row[0],
+                "title": row[1],
+                "description": row[2],
+                "type": row[3],
+                "url": row[4],
+            }
+            for row in rows
+        ]
+        return jsonify(items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.post("/api/resources")
+def create_saved_resource():
+    """Save a learning resource for the current user.
+
+    Expects JSON: { title, description, type, url }.
+    """
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    title = str(data.get("title") or "").strip()
+    url = str(data.get("url") or "").strip()
+    if not title or not url:
+        return jsonify(error="missing title or url"), 400
+    description = str(data.get("description") or "User-saved learning resource.").strip()
+    rtype = str(data.get("type") or "AI Resource").strip()
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO saved_resources (user_id, title, description, type, url)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (uid, title, description, rtype, url),
+        )
+        rid = cur.fetchone()[0]
+        conn.commit()
+        return (
+            jsonify(id=rid, title=title, description=description, type=rtype, url=url),
+            201,
+        )
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.get("/resources/ai")
+@app.get("/api/resources/ai")
+def get_ai_resources():
+    """Return AI-suggested learning resources generated by Gemini.
+
+    Optionally accepts a `topic` query parameter to focus suggestions.
+    Frontend expects either an array or an object with an `items` array; we
+    return a plain array of { id, title, description, type, url } objects.
+    """
+    topic = (request.args.get("topic") or "study skills for students").strip()
+
+    prompt = (
+        "You are LearnNova, a study assistant. Suggest 3-6 high-quality online resources "
+        "(videos, articles, PDFs, or websites) that can help a student with the following topic: "
+        f"'{topic}'.\n\n"
+        "Return ONLY JSON. The JSON should be an array of objects with this exact shape: "
+        "[{\n  \"title\": string,\n  \"description\": string,\n  \"type\": one of [\"Video\", \"Article\", \"PDF\", \"Website\"],\n  \"url\": string\n}].\n"
+        "Do not include any extra commentary or text outside the JSON array."
+    )
+
+    try:
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt,
+        )
+        raw = (getattr(resp, "text", None) or "").strip()
+        data = parse_json_lenient(raw) or []
+        if isinstance(data, dict):
+            items = data.get("items") or []
+        else:
+            items = data
+
+        if not isinstance(items, list):
+            items = []
+
+        out: list[dict] = []
+        for idx, item in enumerate(items):
+            try:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                url = str(item.get("url") or "").strip()
+                if not title or not url:
+                    continue
+                description = str(item.get("description") or "Suggested by LearnNova AI.").strip()
+                itype = str(item.get("type") or "AI Resource").strip()
+                # Map arbitrary type strings into our allowed set
+                normalized = itype.lower()
+                if "video" in normalized:
+                    rtype = "Video"
+                elif "pdf" in normalized:
+                    rtype = "PDF"
+                elif "article" in normalized or "blog" in normalized:
+                    rtype = "Article"
+                elif "site" in normalized or "web" in normalized or "page" in normalized:
+                    rtype = "Website"
+                else:
+                    rtype = "AI Resource"
+
+                out.append(
+                    {
+                        "id": f"ai-{int(time.time())}-{idx}",
+                        "title": title,
+                        "description": description,
+                        "type": rtype,
+                        "url": url,
+                    }
+                )
+            except Exception:
+                continue
+
+        # Fallback: if Gemini fails or returns nothing, return an empty list
+        return jsonify(out), 200
+    except Exception as e:
+        # On error, return empty array so UI doesn't break (can be enhanced with toasts later)
+        print("/resources/ai error:", e, flush=True)
+        return jsonify([]), 200
 
 
 # ============================================================================

@@ -3,7 +3,9 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
-import { Brain, CheckCircle2, XCircle, Sparkles, RotateCcw } from "lucide-react";
+import { Brain, CheckCircle2, XCircle, Sparkles, RotateCcw, Link as LinkIcon } from "lucide-react";
+
+import { sendChat } from "@/lib/chatApi";
 
 // Types
 type QuizSize = "small" | "medium" | "large" | "comprehensive";
@@ -17,6 +19,8 @@ type QuizQuestion = {
   times_seen: number;
   correct_streak: number;
   option_counts: number[];
+  userAnswer?: string | null;
+  isCorrect?: boolean | null;
 };
 
 type QuizResponse = {
@@ -29,6 +33,8 @@ type ResumeQuizResponse = {
     question: string;
     options: string[];
     correctIndex: number | null;
+    user_answer?: string | null;
+    is_correct?: boolean | null;
     times_correct?: number;
     times_seen?: number;
     correct_streak?: number;
@@ -43,6 +49,7 @@ type ResumeQuizResponse = {
 };
 
 type ContentResp = { title?: string; content?: string };
+
 function parseContentResp(u: unknown): ContentResp {
   if (u && typeof u === "object") {
     const o = u as Record<string, unknown>;
@@ -52,6 +59,53 @@ function parseContentResp(u: unknown): ContentResp {
     };
   }
   return {};
+}
+
+function truncateToSentences(text: string, maxSentences: number): string {
+  const parts = text.split(/(?<=[.!?])\s+/);
+  return parts.slice(0, maxSentences).join(" ").trim();
+}
+
+type SuggestedResource = {
+  id: string;
+  title: string;
+  description: string;
+  url: string;
+};
+
+function buildSuggestedResources(topics: string[]): SuggestedResource[] {
+  const cleanTopics = Array.from(new Set(topics.map((t) => t.trim()).filter(Boolean))).slice(0, 3);
+  if (!cleanTopics.length) return [];
+
+  const items: SuggestedResource[] = [];
+  cleanTopics.forEach((topic, idx) => {
+    const ytQuery = encodeURIComponent(`${topic} tutorial`);
+    const khanQuery = encodeURIComponent(topic);
+    const webQuery = encodeURIComponent(topic);
+
+    items.push(
+      {
+        id: `yt-${idx}`,
+        title: `YouTube: ${topic} tutorial`,
+        description: "Watch a quick walkthrough video on this topic.",
+        url: `https://www.youtube.com/results?search_query=${ytQuery}`,
+      },
+      {
+        id: `khan-${idx}`,
+        title: `Khan Academy: ${topic}`,
+        description: "Concept-focused practice and explanations on Khan Academy.",
+        url: `https://www.khanacademy.org/search?page_search_query=${khanQuery}`,
+      },
+      {
+        id: `web-${idx}`,
+        title: `Google search: ${topic}`,
+        description: "Broader web resources and references for this topic.",
+        url: `https://www.google.com/search?q=${webQuery}`,
+      }
+    );
+  });
+
+  return items.slice(0, 6);
 }
 
 // Simple checkbox combobox for multi-select
@@ -140,7 +194,7 @@ export default function Quiz() {
   const [size, setSize] = useState<QuizSize>("small");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const location = useLocation() as { state?: { summary?: string; quizId?: number } };
+  const location = useLocation() as { state?: { summary?: string; quizId?: number; noteId?: number } };
   const navigate = useNavigate();
   // Multi-select data
   const [allNotes, setAllNotes] = useState<Array<{ id: number; title: string }>>([]);
@@ -160,6 +214,15 @@ export default function Quiz() {
   const [questionIds, setQuestionIds] = useState<number[]>([]);
   const [confidence, setConfidence] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [autoExplain, setAutoExplain] = useState(false);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explaining, setExplaining] = useState(false);
+  const [explainError, setExplainError] = useState<string | null>(null);
+  const [savingQuiz, setSavingQuiz] = useState(false);
+  const [saveQuizError, setSaveQuizError] = useState<string | null>(null);
+  const [saveQuizSuccess, setSaveQuizSuccess] = useState(false);
+  const [suggestedResources, setSuggestedResources] = useState<SuggestedResource[]>([]);
+
   // Derived
   const current = questions ? questions[idx] : null;
   const total = questions ? questions.length : 0;
@@ -177,7 +240,12 @@ export default function Quiz() {
           ]);
           if (nRes.ok) {
             const n = await nRes.json();
-            setAllNotes(((n?.items as ComboOption[]) || []).map(x => ({ id: x.id, title: x.title })));
+            const noteItems = ((n?.items as ComboOption[]) || []).map(x => ({ id: x.id, title: x.title }));
+            setAllNotes(noteItems);
+            const navNoteId = location.state?.noteId;
+            if (typeof navNoteId === "number" && noteItems.some(opt => opt.id === navNoteId)) {
+              setSelectedNoteIds(ids => (ids.length ? ids : [navNoteId]));
+            }
           }
           if (sRes.ok) {
             const s = await sRes.json();
@@ -204,7 +272,7 @@ export default function Quiz() {
               return;
             }
             const serverQs = (data?.questions || []) as Array<{
-              id: number; question: string; options: string[]; correctIndex: number | null;
+              id: number; question: string; options: string[]; correctIndex: number | null; user_answer?: string | null; is_correct?: boolean | null;
               times_correct?: number; times_seen?: number; correct_streak?: number; option_counts?: number[];
             }>;
             const mapped: QuizQuestion[] = serverQs.map(q => {
@@ -221,7 +289,9 @@ export default function Quiz() {
                 times_seen: Number.isFinite(q.times_seen) ? (q.times_seen as number) : 0,
                 correct_streak: Number.isFinite(q.correct_streak) ? (q.correct_streak as number) : 0,
                 option_counts: oc,
-              });
+                userAnswer: q.user_answer ?? null,
+              isCorrect: typeof q.is_correct === "boolean" ? q.is_correct : null,
+            });
             });
             setQuestions(mapped.length ? mapped : null);
             setQuizId(qid);
@@ -232,9 +302,21 @@ export default function Quiz() {
             setScore(Number((data?.display_correct ?? data?.score ?? 0)));
             const denom = (typeof data?.display_total === 'number' ? data!.display_total! : (typeof data?.original_count === 'number' ? data!.original_count! : mapped.length));
             setTotalOverride(denom);
+            const nextQ = mapped[nextIdx];
+            if (nextQ && nextQ.userAnswer) {
+              const sel = nextQ.options.indexOf(nextQ.userAnswer);
+              if (sel >= 0) {
+                setSelected(sel);
+                setFeedback(nextQ.isCorrect ? "correct" : "incorrect");
+              }
+            }
             setLoading(false);
-          } catch (e: any) {
-            setError(e?.message || "Failed to load quiz");
+          } catch (e: unknown) {
+            if (e instanceof Error) {
+              setError(e.message || "Failed to load quiz");
+            } else {
+              setError("Failed to load quiz");
+            }
             setLoading(false);
           }
         })();
@@ -302,16 +384,19 @@ export default function Quiz() {
       }
       const payloadSummary = combined.trim();
       const res = await fetch("/api/quiz", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ summary: payloadSummary, size, topics: Array.from(topicSet) }),
-    });
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ summary: payloadSummary, size, topics: Array.from(topicSet) }),
+      });
       const data = (await res
         .json()
         .catch(() => ({}))) as (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string };
       if (!res.ok) {
-        throw new Error((data as any)?.error || `Quiz generation failed (${res.status})`);
+        const message = "error" in data && typeof data.error === "string"
+          ? data.error
+          : `Quiz generation failed (${res.status})`;
+        throw new Error(message);
       }
       const qs = (data as QuizResponse).questions || [];
       if (!qs.length) throw new Error("No questions returned");
@@ -335,8 +420,12 @@ export default function Quiz() {
       setQuestionIds(qids.length ? qids : mapped.map(m => m.id));
       setQuestions(mapped);
       setTotalOverride(mapped.length);
-    } catch (e: any) {
-      setError(e?.message || "Quiz request failed");
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setError(e.message || "Quiz request failed");
+      } else {
+        setError("Quiz request failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -347,7 +436,19 @@ export default function Quiz() {
     const correct = selected === current.correctIndex;
     setFeedback(correct ? "correct" : "incorrect");
     if (correct) setScore((s) => s + 1);
-    // Keep history hidden by default; user can toggle it manually
+
+    setQuestions((prev) => {
+      if (!prev) return prev;
+      const copy = [...prev];
+      const q = copy[idx];
+      if (!q) return prev;
+      copy[idx] = {
+        ...q,
+        userAnswer: current.options[selected],
+        isCorrect: correct,
+      };
+      return copy;
+    });
 
     // Persist answer in background
     try {
@@ -390,6 +491,10 @@ export default function Quiz() {
       copy[idx] = q;
       return copy;
     });
+
+    if (autoExplain && current) {
+      void requestExplanation("explain");
+    }
   };
 
   const nextQuestion = () => {
@@ -397,6 +502,15 @@ export default function Quiz() {
     const next = idx + 1;
     if (next < questions.length) {
       setIdx(next);
+      const q = questions[next];
+      if (q && q.userAnswer) {
+        const sel = q.options.indexOf(q.userAnswer);
+        if (sel >= 0) {
+          setSelected(sel);
+          setFeedback(q.isCorrect ? "correct" : "incorrect");
+          return;
+        }
+      }
       setSelected(null);
       setFeedback(null);
       setConfidence(null);
@@ -434,10 +548,11 @@ export default function Quiz() {
           // Reload quiz from server after reset
           const getRes = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
           const data = (await getRes.json().catch(() => ({}))) as unknown as ResumeQuizResponse | { error?: string };
+
           if (getRes.ok && data && typeof data === "object" && "questions" in data) {
             const serverQs = (data.questions || []) as Array<{
               id: number; question: string; options: string[]; correctIndex: number | null;
-              times_correct?: number; times_seen?: number; correct_streak?: number; option_counts?: number[];
+              times_correct?: number; times_seen?: number; correct_streak?: number; option_counts?: number[]; user_answer?: string | null; is_correct?: boolean | null;
             }>;
             const mapped: QuizQuestion[] = serverQs.map((q, i) => {
               const options = q.options || [];
@@ -452,6 +567,8 @@ export default function Quiz() {
                 times_correct: Number.isFinite(q.times_correct) ? (q.times_correct as number) : 0,
                 times_seen: Number.isFinite(q.times_seen) ? (q.times_seen as number) : 0,
                 correct_streak: Number.isFinite(q.correct_streak) ? (q.correct_streak as number) : 0,
+                userAnswer: q.user_answer ?? null,
+                isCorrect: typeof q.is_correct === "boolean" ? q.is_correct : null,
                 option_counts: oc,
               };
             });
@@ -485,7 +602,165 @@ export default function Quiz() {
     setSelected(null);
     setFeedback(null);
     setScore(0);
+    setSaveQuizError(null);
+    setSaveQuizSuccess(false);
+    setSuggestedResources([]);
   };
+
+  const saveQuiz = async () => {
+    if (!quizId) {
+      setSaveQuizError("This quiz cannot be saved because its ID is missing.");
+      return;
+    }
+    setSavingQuiz(true);
+    setSaveQuizError(null);
+    setSaveQuizSuccess(false);
+    try {
+      const defaultTitle = `Quiz #${quizId}`;
+      const res = await fetch(`/api/quizzes/${quizId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ title: defaultTitle }),
+      });
+      const data = await res.json().catch(() => ({} as { error?: string }));
+      if (!res.ok) {
+        setSaveQuizError((data && data.error) || "Failed to save quiz.");
+        return;
+      }
+      setSaveQuizSuccess(true);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to save quiz.";
+      setSaveQuizError(msg);
+    } finally {
+      setSavingQuiz(false);
+    }
+  };
+
+  const requestExplanation = async (mode: "tutor" | "explain") => {
+    if (!current) return;
+    setExplaining(true);
+    setExplainError(null);
+    setExplanation(null);
+    const userAnswer = selected != null && current.options[selected] ? current.options[selected] : null;
+    const lines: string[] = [];
+    lines.push("I am working on a multiple-choice quiz question.");
+    lines.push("Explain the reasoning in at most 2 short sentences. Do not write a long paragraph or bullet list.");
+    lines.push("Question:");
+    lines.push(current.question);
+    lines.push("");
+    lines.push("Options:");
+    current.options.forEach((opt, i) => {
+      lines.push(`${i + 1}. ${opt}`);
+    });
+    if (userAnswer) {
+      lines.push("");
+      lines.push(`My selected answer: ${userAnswer}`);
+      if (feedback === "correct") {
+        lines.push("I answered correctly.");
+      } else if (feedback === "incorrect") {
+        lines.push("I answered incorrectly.");
+      }
+    }
+    const prompt = lines.join("\n");
+    let full = "";
+    try {
+      await sendChat(
+        [{ role: "user", content: prompt }],
+        mode === "tutor"
+          ? { tutorNoAnswer: true }
+          : {},
+        {
+          onToken: (delta) => {
+            full += delta;
+            setExplanation((prev) => (prev ?? "") + delta);
+          },
+          onDone: () => {
+            setExplaining(false);
+            if (!full) {
+              setExplainError("The assistant did not return an explanation. Please try again.");
+            } else {
+              setExplanation(truncateToSentences(full, 2));
+            }
+          },
+          onError: (err) => {
+            setExplaining(false);
+            if (err.message === "auth") {
+              setExplainError("Sign in to use the assistant.");
+            } else if (err.message === "rate") {
+              setExplainError("You are being rate limited. Please wait a moment and try again.");
+            } else {
+              setExplainError(err.message || "The assistant encountered an error.");
+            }
+          },
+        }
+      );
+    } catch (e: unknown) {
+      setExplaining(false);
+      if (e instanceof Error) {
+        setExplainError(e.message || "The assistant encountered an error.");
+      } else {
+        setExplainError("The assistant encountered an error.");
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!questions || !questions.length) return;
+    if (idx !== questions.length - 1) return;
+    if (feedback === null) return;
+
+    (async () => {
+      let topicLabels: string[] = [];
+
+      // 1) Prefer backend topics from the quiz record if available
+      if (quizId) {
+        try {
+          const res = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
+          if (res.ok) {
+            const data = await res.json().catch(() => ({} as { topics?: unknown }));
+            const rawTopics = (data && (data as { topics?: unknown }).topics) as unknown;
+            if (Array.isArray(rawTopics)) {
+              topicLabels = rawTopics
+                .map((t) => String(t || "").trim())
+                .filter((t) => t.length > 0);
+            }
+          }
+        } catch {
+          // ignore and fall back
+        }
+      }
+
+      // 2) Fallback: derive simple labels from missed questions' text
+      if (!topicLabels.length) {
+        const missed = questions.filter((q) => q.isCorrect === false);
+        missed.forEach((q) => {
+          const raw = q.question || "";
+          const firstSentence = raw.split(/[.!?]/)[0] || raw;
+          const words = firstSentence.split(/\s+/).filter(Boolean).slice(0, 8);
+          const label = words.join(" ").trim();
+          if (label) topicLabels.push(label);
+        });
+      }
+
+      if (!topicLabels.length) return;
+
+      const resources = buildSuggestedResources(topicLabels);
+      setSuggestedResources(resources);
+
+      if (resources.length) {
+        const topicSummary = topicLabels.slice(0, 3).join("; ");
+        const lines: string[] = [];
+        lines.push(`Here are some resources that could help deepen your understanding of these quiz topics: ${topicSummary}.`);
+        lines.push("");
+        resources.forEach((r, i) => {
+          lines.push(`${i + 1}. ${r.title} -> ${r.url}`);
+        });
+        const prompt = lines.join("\n");
+        window.dispatchEvent(new CustomEvent("learnnova:openChatWithPrompt", { detail: { prompt } }));
+      }
+    })();
+  }, [questions, idx, feedback, quizId]);
 
   return (
     <div className="min-h-screen">
@@ -593,6 +868,41 @@ export default function Quiz() {
                 <div className="space-y-6">
                   <div className="prose prose-invert max-w-none">
                     <MarkdownMathRenderer text={current.question} />
+                  </div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-xs text-pink-100">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 text-[#FFBB94] hover:text-white underline decoration-[#FFBB94]"
+                      onClick={() => {
+                        if (!current) return;
+                        const lines: string[] = [];
+                        lines.push("I am working on a multiple-choice quiz question.");
+                        lines.push("Please give a short, concise explanation (ideally 2–3 sentences). Do not write a long essay.");
+                        lines.push("Question:");
+                        lines.push(current.question);
+                        lines.push("");
+                        lines.push("Options:");
+                        current.options.forEach((opt, i) => {
+                          lines.push(`${i + 1}. ${opt}`);
+                        });
+                        const prompt = lines.join("\n");
+                        window.dispatchEvent(new CustomEvent("learnnova:openChatWithPrompt", { detail: { prompt } }));
+                      }}
+                      disabled={explaining}
+                    >
+                      <Brain className="h-4 w-4" />
+                      Need help? Ask the assistant
+                    </button>
+
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        className="accent-[#FB9590]"
+                        checked={autoExplain}
+                        onChange={(e) => setAutoExplain(e.target.checked)}
+                      />
+                      <span>Explain each question after I answer</span>
+                    </label>
                   </div>
                   <div className="space-y-3">
                     {current.options.map((opt, i) => {
@@ -710,6 +1020,25 @@ export default function Quiz() {
                           </div>
                         </div>
                       )}
+                      {(explanation || explaining || explainError) && (
+                        <div className="p-4 rounded-lg bg-[#852E4E]/40 border border-pink-700/40 space-y-2">
+                          <div className="flex items-center gap-2 text-pink-100 text-sm font-semibold">
+                            <Brain className="h-4 w-4" />
+                            <span>Assistant explanation</span>
+                          </div>
+                          {explaining && (
+                            <p className="text-xs text-pink-100">Generating explanation…</p>
+                          )}
+                          {explanation && (
+                            <div className="prose prose-invert max-w-none text-sm">
+                              <MarkdownMathRenderer text={explanation} />
+                            </div>
+                          )}
+                          {explainError && (
+                            <p className="text-xs text-red-200">{explainError}</p>
+                          )}
+                        </div>
+                      )}
                       {idx < total - 1 ? (
                         <Button
                           onClick={nextQuestion}
@@ -732,6 +1061,47 @@ export default function Quiz() {
                                "Keep studying, you've got this! 📚"}
                             </p>
                           </div>
+                          {suggestedResources.length > 0 && (
+                            <div className="p-5 rounded-lg bg-[#4C1D3D]/80 border border-pink-700/60 space-y-3">
+                              <div className="flex items-center gap-2 text-[#FFBB94]">
+                                <LinkIcon className="h-4 w-4" />
+                                <span className="font-semibold text-sm">Here are some resources that could help deepen your understanding:</span>
+                              </div>
+                              <ul className="space-y-2 text-sm text-pink-100">
+                                {suggestedResources.map((r) => (
+                                  <li key={r.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                                    <div>
+                                      <div className="font-medium">{r.title}</div>
+                                      <div className="text-xs text-pink-200">{r.description}</div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => window.open(r.url, "_blank", "noopener,noreferrer")}
+                                      className="mt-1 sm:mt-0 inline-flex items-center justify-center px-3 py-1.5 rounded-full text-xs bg-[#FFBB94] text-[#4C1D3D] font-semibold hover:bg-[#FB9590] transition"
+                                    >
+                                      Open link
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                              <p className="text-[11px] text-pink-200/80">
+                                These links are based on general searches (YouTube, Khan Academy, and web docs) for topics you missed.
+                              </p>
+                            </div>
+                          )}
+                          <Button
+                            onClick={saveQuiz}
+                            disabled={savingQuiz || !quizId}
+                            className="w-full bg-[#852E4E] hover:bg-[#A33757] text-white font-semibold py-4 disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {savingQuiz ? "Saving quiz..." : "Save Quiz to Dashboard"}
+                          </Button>
+                          {saveQuizSuccess && (
+                            <p className="text-sm text-green-200 text-center">Quiz saved. You can find it under Dashboard → Quizzes.</p>
+                          )}
+                          {saveQuizError && (
+                            <p className="text-sm text-red-200 text-center">{saveQuizError}</p>
+                          )}
                           <Button
                             onClick={restart}
                             className="w-full bg-gradient-to-r from-[#852E4E] to-[#A33757] hover:from-[#A33757] hover:to-[#852E4E] text-white font-semibold py-4"

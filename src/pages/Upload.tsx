@@ -22,6 +22,12 @@ export default function Upload() {
   const [newCourseName, setNewCourseName] = useState("");
   const [newCourseDescription, setNewCourseDescription] = useState("");
   const [courseFormError, setCourseFormError] = useState<string | null>(null);
+  const [uploadSummary, setUploadSummary] = useState<string | null>(null);
+  const [uploadExtractedText, setUploadExtractedText] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedSummaryId, setSavedSummaryId] = useState<number | null>(null);
+  const [savedNoteId, setSavedNoteId] = useState<number | null>(null);
   const navigate = useNavigate();
 
   // Auth is session-based (Flask session). No localStorage user id.
@@ -33,6 +39,56 @@ export default function Upload() {
     e.preventDefault();
     e.stopPropagation();
     if (!isDragging) setIsDragging(true);
+  };
+
+  const handleSaveNotesAndSummary = async () => {
+    if (!uploadSummary && !uploadExtractedText) return;
+    try {
+      setSaving(true);
+      setSaveError(null);
+      const baseTitle = file?.name ? file.name.replace(/\.[^/.]+$/, "") : "Uploaded Note";
+
+      if (uploadExtractedText && !savedNoteId) {
+        const resNote = await fetch("/api/notes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            title: `${baseTitle} (Notes)`,
+            content: uploadExtractedText,
+          }),
+        });
+        if (resNote.ok) {
+          const j = await resNote.json().catch(() => ({}));
+          const nid = typeof j?.id === "number" ? j.id : null;
+          setSavedNoteId(nid);
+        }
+      }
+
+      if (uploadSummary && !savedSummaryId) {
+        const resSummary = await fetch("/api/summaries", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            title: `${baseTitle} (Summary)`,
+            content: uploadSummary,
+            topics: [],
+            course_id: selectedCourseId === "" ? null : selectedCourseId,
+          }),
+        });
+        if (resSummary.ok) {
+          const j = await resSummary.json().catch(() => ({}));
+          const sid = typeof j?.id === "number" ? j.id : null;
+          setSavedSummaryId(sid);
+        }
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to save notes and summary";
+      setSaveError(msg);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
@@ -104,6 +160,7 @@ export default function Upload() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSaveError(null);
     if (!file) {
       setError("Please choose a file first.");
       return;
@@ -122,9 +179,12 @@ export default function Upload() {
       if (!res.ok) {
         throw new Error(data?.error || `Upload failed (${res.status})`);
       }
-
-      // Navigate to summary page with the response data
-      navigate("/summary", { state: { summary: data.summary, result: data } });
+      const summaryText = typeof data?.summary === "string" ? data.summary : null;
+      const extractedText = typeof data?.extracted_text === "string" ? data.extracted_text : null;
+      setUploadSummary(summaryText);
+      setUploadExtractedText(extractedText);
+      setSavedSummaryId(null);
+      setSavedNoteId(null);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Upload failed";
       setError(msg);
@@ -262,6 +322,73 @@ export default function Upload() {
                   </>
                 )}
               </button>
+
+              {(uploadSummary || uploadExtractedText) && (
+                <div className="mt-6 space-y-4">
+                  {saveError && (
+                    <div className="flex items-start gap-3 p-3 bg-red-900/30 border border-red-700/50 rounded-lg">
+                      <AlertCircle className="h-4 w-4 text-red-400 flex-shrink-0 mt-0.5" />
+                      <p className="text-xs text-red-200">{saveError}</p>
+                    </div>
+                  )}
+
+                  {uploadSummary && (
+                    <div className="p-4 rounded-lg bg-[#852E4E]/20 border border-pink-700/40">
+                      <p className="text-sm font-semibold text-pink-100 mb-2">Summary Preview</p>
+                      <p className="text-sm text-pink-200 whitespace-pre-wrap max-h-40 overflow-y-auto">{uploadSummary}</p>
+                    </div>
+                  )}
+
+                  {uploadExtractedText && (
+                    <div className="p-4 rounded-lg bg-[#852E4E]/20 border border-pink-700/40">
+                      <p className="text-sm font-semibold text-pink-100 mb-2">Original Notes Preview</p>
+                      <p className="text-sm text-pink-200 whitespace-pre-wrap max-h-40 overflow-y-auto">{uploadExtractedText}</p>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleSaveNotesAndSummary}
+                    disabled={saving || (!!savedNoteId && !!savedSummaryId)}
+                    className="w-full px-6 py-3 bg-gradient-to-r from-[#DC586D] to-[#A33757] text-white rounded-xl font-medium shadow-lg hover:shadow-pink-900/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
+                  >
+                    {saving ? (
+                      <>
+                        <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
+                        <span>Saving...</span>
+                      </>
+                    ) : savedNoteId || savedSummaryId ? (
+                      <span>Saved</span>
+                    ) : (
+                      <>
+                        <Sparkles className="h-5 w-5" />
+                        <span>Save Notes & Summary</span>
+                      </>
+                    )}
+                  </button>
+
+                  {uploadSummary && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigate("/summary", {
+                          state: {
+                            summary: uploadSummary,
+                            result: {
+                              extracted_text: uploadExtractedText ?? undefined,
+                              filename: file?.name,
+                            },
+                          },
+                        });
+                      }}
+                      className="w-full px-6 py-3 bg-[#4C1D3D] border border-pink-700/60 text-[#FFBB94] rounded-xl font-medium shadow-lg hover:shadow-pink-900/30 transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
+                    >
+                      <FileText className="h-5 w-5" />
+                      <span>View Summary Page</span>
+                    </button>
+                  )}
+                </div>
+              )}
             </form>
 
             {/* Info Section */}
