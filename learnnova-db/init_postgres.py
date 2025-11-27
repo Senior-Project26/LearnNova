@@ -264,6 +264,34 @@ def create_tables():
             """
         )
 
+        # CHAT THREADS (per user)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_threads (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            """
+        )
+
+        # CHAT MESSAGES (belong to a thread)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id SERIAL PRIMARY KEY,
+                thread_id INTEGER NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('system','user','assistant')),
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+            );
+            """
+        )
+
         conn.commit()
         # Add unique index to prevent duplicate topics per course (case-insensitive)
         cur = conn.cursor()
@@ -283,7 +311,7 @@ def create_tables():
             conn.commit()
         except Exception:
             conn.rollback()
-        print("Postgres database initialized successfully. Tables: users, courses, topics, quizzes, quiz_questions, notes, summaries, study_guides, study_sets")
+        print("Postgres database initialized successfully. Tables: users, courses, topics, quizzes, quiz_questions, notes, summaries, study_guides, study_sets, chat_threads, chat_messages")
     except Exception as e:
         conn.rollback()
         print("Initialization failed:", e)

@@ -95,7 +95,7 @@ export default function StudyGuide() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const [savedGuideId, setSavedGuideId] = useState<number | null>(null);
-  const location = useLocation() as { state?: { studyGuideId?: number } };
+  const location = useLocation() as { state?: { studyGuideId?: number; noteId?: number } };
   const navigate = useNavigate();
   const [viewingId, setViewingId] = useState<number | null>(null);
   const [titleInput, setTitleInput] = useState<string>("");
@@ -153,6 +153,10 @@ export default function StudyGuide() {
             ? nItemsUnknown.filter(isItem).map(x => ({ id: x.id, title: x.title ?? "" }))
             : [];
           setAllNotes(noteList);
+          const navNoteId = location.state?.noteId;
+          if (typeof navNoteId === "number" && noteList.some(x => x.id === navNoteId)) {
+            setSelectedNoteIds(ids => (ids.length ? ids : [navNoteId]));
+          }
         }
         if (sRes.ok) {
           const sRaw: unknown = await sRes.json();
