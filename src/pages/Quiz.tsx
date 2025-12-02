@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { Brain, CheckCircle2, XCircle, Sparkles, RotateCcw, Link as LinkIcon } from "lucide-react";
 
@@ -199,6 +200,8 @@ export default function Quiz() {
   // Multi-select data
   const [allNotes, setAllNotes] = useState<Array<{ id: number; title: string }>>([]);
   const [allSummaries, setAllSummaries] = useState<Array<{ id: number; title: string }>>([]);
+  const [courses, setCourses] = useState<Array<{ id: number; name: string }>>([]);
+  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
   const [selectedNoteIds, setSelectedNoteIds] = useState<number[]>([]);
   const [selectedSummaryIds, setSelectedSummaryIds] = useState<number[]>([]);
   const [stateSummaryContent, setStateSummaryContent] = useState<string>("");
@@ -234,9 +237,10 @@ export default function Quiz() {
       // Load lists
       (async () => {
         try {
-          const [nRes, sRes] = await Promise.all([
+          const [nRes, sRes, cRes] = await Promise.all([
             fetch("/api/all_notes", { credentials: "include" }),
             fetch("/api/all_summaries", { credentials: "include" }),
+            fetch("/api/courses", { credentials: "include" }),
           ]);
           if (nRes.ok) {
             const n = await nRes.json();
@@ -250,6 +254,14 @@ export default function Quiz() {
           if (sRes.ok) {
             const s = await sRes.json();
             setAllSummaries(((s?.items as ComboOption[]) || []).map(x => ({ id: x.id, title: x.title })));
+          }
+          if (cRes.ok) {
+            const c = await cRes.json();
+            const list = Array.isArray(c?.courses) ? c.courses as Array<{ id: number; name: string }> : [];
+            setCourses(list);
+            if (list.length > 0) {
+              setSelectedCourseId(list[0].id);
+            }
           }
         } catch (e) {
           console.warn("Failed to load notes/summaries list", e);
@@ -384,11 +396,11 @@ export default function Quiz() {
       }
       const payloadSummary = combined.trim();
       const res = await fetch("/api/quiz", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ summary: payloadSummary, size, topics: Array.from(topicSet) }),
-      });
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ summary: payloadSummary, size, topics: Array.from(topicSet), course_id: selectedCourseId }),
+    });
       const data = (await res
         .json()
         .catch(() => ({}))) as (QuizResponse & { quiz_id?: number; question_ids?: number[] }) | { error?: string };
@@ -416,7 +428,13 @@ export default function Quiz() {
           option_counts: oc,
         };
       });
-      setQuizId("quiz_id" in data && typeof (data as any).quiz_id === "number" ? (data as any).quiz_id : null);
+      const newQuizId = ("quiz_id" in data && typeof (data as any).quiz_id === "number")
+        ? (data as any).quiz_id as number
+        : null;
+      if (newQuizId == null) {
+        throw new Error("Quiz request did not return a valid quiz id; please try again.");
+      }
+      setQuizId(newQuizId);
       setQuestionIds(qids.length ? qids : mapped.map(m => m.id));
       setQuestions(mapped);
       setTotalOverride(mapped.length);
@@ -497,8 +515,78 @@ export default function Quiz() {
     }
   };
 
-  const nextQuestion = () => {
+  const persistConfidenceForCurrent = async (override?: number) => {
+    if (!questions || quizId == null) return;
+    const qid = questionIds[idx];
+    if (!qid) return;
+    const conf = override ?? confidence ?? 3;
+    try {
+      await fetch("/api/quiz/confidence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          quiz_id: quizId,
+          question_id: qid,
+          question_number: idx + 1,
+          confidence: conf,
+        }),
+      });
+    } catch (e) {
+      console.warn("Failed to persist confidence", e);
+    }
+  };
+
+  const nextQuestion = async () => {
     if (!questions) return;
+    if (feedback !== null) {
+      await persistConfidenceForCurrent();
+    }
+    const next = idx + 1;
+    if (next < questions.length) {
+      setIdx(next);
+      const q = questions[next];
+      if (q && q.userAnswer) {
+        const sel = q.options.indexOf(q.userAnswer);
+        if (sel >= 0) {
+          setSelected(sel);
+          setFeedback(q.isCorrect ? "correct" : "incorrect");
+          return;
+        }
+      }
+      setSelected(null);
+      setFeedback(null);
+      setConfidence(null);
+    }
+  };
+
+  const persistConfidenceForCurrent = async (override?: number) => {
+    if (!questions || quizId == null) return;
+    const qid = questionIds[idx];
+    if (!qid) return;
+    const conf = override ?? confidence ?? 3;
+    try {
+      await fetch("/api/quiz/confidence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          quiz_id: quizId,
+          question_id: qid,
+          question_number: idx + 1,
+          confidence: conf,
+        }),
+      });
+    } catch (e) {
+      console.warn("Failed to persist confidence", e);
+    }
+  };
+
+  const nextQuestion = async () => {
+    if (!questions) return;
+    if (feedback !== null) {
+      await persistConfidenceForCurrent();
+    }
     const next = idx + 1;
     if (next < questions.length) {
       setIdx(next);
@@ -519,26 +607,14 @@ export default function Quiz() {
 
   const selectConfidence = async (val: number) => {
     setConfidence(val);
-    try {
-      const qid = questionIds[idx];
-      await fetch("/api/quiz/answer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          quiz_id: quizId,
-          question_id: qid,
-          question_number: idx + 1,
-          confidence: val,
-        }),
-      });
-    } catch (e) {
-      console.warn("Failed to persist confidence", e);
-    }
+    await persistConfidenceForCurrent(val);
   };
 
   const restart = async () => {
     setError(null);
+    if (questions && idx === questions.length - 1 && feedback !== null) {
+      await persistConfidenceForCurrent();
+    }
     // If resuming an existing quiz, call reset endpoint then reload it
     if (quizId) {
       try {
@@ -596,8 +672,8 @@ export default function Quiz() {
       }
       return;
     }
-    // Otherwise, local reset for a new quiz flow
-    setQuestions(null);
+    // Otherwise, local reset for a new quiz flow: restart from the beginning of
+    // the existing questions instead of returning to the generator form.
     setIdx(0);
     setSelected(null);
     setFeedback(null);
@@ -771,7 +847,7 @@ export default function Quiz() {
           </h1>
           <p className="text-pink-100 flex items-center justify-center gap-2">
             <Brain className="h-5 w-5 text-[#FB9590]" />
-            Test your knowledge with AI-powered quizzes ✨
+            Test your knowledge with AI-powered quizzes 
           </p>
         </div>
 
@@ -803,19 +879,57 @@ export default function Quiz() {
                 />
               </div>
 
-              <label className="block">
-                <span className="font-medium text-pink-100">Quiz Size</span>
-                <select
-                  className="mt-2 w-full p-3 bg-[#852E4E]/40 border border-pink-700/40 rounded-lg text-white"
-                  value={size}
-                  onChange={(e) => setSize(e.target.value as QuizSize)}
-                >
-                  <option value="small">Small (5-10 questions)</option>
-                  <option value="medium">Medium (12-18 questions)</option>
-                  <option value="large">Large (25-35 questions)</option>
-                  <option value="comprehensive">Comprehensive (50 questions)</option>
-                </select>
-              </label>
+              <div className="grid md:grid-cols-2 gap-4">
+                <label className="block">
+                  <span className="font-medium text-pink-100">Quiz Size</span>
+                  <div className="mt-2">
+                    <Select value={size} onValueChange={(v) => setSize(v as QuizSize)}>
+                      <SelectTrigger className="w-full bg-[#852E4E]/40 border border-pink-700/40 text-white">
+                        <SelectValue placeholder="Select size" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-[#4C1D3D] text-white border-pink-700/60">
+                        <SelectItem value="small">Small (5-10 questions)</SelectItem>
+                        <SelectItem value="medium">Medium (12-18 questions)</SelectItem>
+                        <SelectItem value="large">Large (25-35 questions)</SelectItem>
+                        <SelectItem value="comprehensive">Comprehensive (50 questions)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </label>
+
+                <label className="block">
+                  <span className="font-medium text-pink-100">Course</span>
+                  <div className="mt-2">
+                    <Select
+                      value={selectedCourseId !== null ? String(selectedCourseId) : "none"}
+                      onValueChange={(val) => {
+                        if (val === "none") {
+                          setSelectedCourseId(null);
+                        } else {
+                          setSelectedCourseId(Number(val));
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="w-full bg-[#852E4E]/40 border border-pink-700/40 text-white">
+                        <SelectValue placeholder={courses.length ? "No course" : "No courses available"} />
+                      </SelectTrigger>
+                      <SelectContent className="bg-[#4C1D3D] text-white border-pink-700/60">
+                        <SelectItem value="none">No course</SelectItem>
+                        {courses.length === 0 && (
+                          <SelectItem value="empty" disabled>
+                            No courses available
+                          </SelectItem>
+                        )}
+                        {courses.length > 0 && courses.map((c) => (
+                          <SelectItem key={c.id} value={String(c.id)}>
+                            {c.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </label>
+              </div>
 
               <Button
                 onClick={requestQuiz}

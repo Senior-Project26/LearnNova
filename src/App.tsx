@@ -24,6 +24,8 @@ import StudySet from "./pages/StudySet";
 import ChatPage from "./pages/Chat";
 import LearningResources from "./pages/LearningResources";
 import FloatingChatBubble from "@/components/chat/FloatingChatBubble";
+import Plan from "./pages/Plan";
+import PlanResult from "./pages/PlanResult";
 
 const queryClient = new QueryClient();
 
@@ -109,6 +111,26 @@ const App = () => (
                 <SessionProtectedRoute>
                   <ProtectedLayout>
                     <Study />
+                  </ProtectedLayout>
+                </SessionProtectedRoute>
+              }
+            />
+            <Route
+              path="/plan"
+              element={
+                <SessionProtectedRoute>
+                  <ProtectedLayout>
+                    <Plan />
+                  </ProtectedLayout>
+                </SessionProtectedRoute>
+              }
+            />
+            <Route
+              path="/plan/results"
+              element={
+                <SessionProtectedRoute>
+                  <ProtectedLayout>
+                    <PlanResult />
                   </ProtectedLayout>
                 </SessionProtectedRoute>
               }

@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import {
@@ -21,6 +22,7 @@ type RecentItem = { type: 'study_set' | 'study_guide' | 'note' | 'summary'; id: 
 type RecentResponse = { items?: RecentItem[]; error?: string };
 type StudySetListItem = { id: number; name?: string; course?: { name?: string }; cards?: unknown[]; cardsCount?: number };
 type StudySetListResponse = { items?: StudySetListItem[]; error?: string };
+type Course = { id: number; name: string };
 
 const Study = () => {
   const navigate = useNavigate();
@@ -36,6 +38,9 @@ const Study = () => {
   const [modalBody, setModalBody] = useState<string>("");
   const [modalLoading, setModalLoading] = useState(false);
   const [currentRecentIndex, setCurrentRecentIndex] = useState<number | null>(null);
+  const [selectedCourse, setSelectedCourse] = useState<string>("all");
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [noMasteryMessage, setNoMasteryMessage] = useState<string | null>(null);
 
   const openRecentAt = async (i: number) => {
     const items = recent;
@@ -81,6 +86,32 @@ const Study = () => {
         setRecentError(e instanceof Error ? e.message : 'Failed to load recent');
       }
     })();
+  }, []);
+
+  // Load all courses from the backend for the dropdown (kept for future use,
+  // but progress visualization is now driven by /api/course_progress_all).
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/courses", { credentials: "include" });
+        const data = await res.json().catch(() => ({} as { courses?: Course[]; error?: string }));
+        if (!mounted) return;
+        if (res.ok && Array.isArray(data.courses)) {
+          setCourses(data.courses.map(c => ({ id: c.id, name: c.name })));
+        } else if (!res.ok) {
+          console.error("Failed to load courses", data?.error || res.status);
+          setCourses([]);
+        }
+      } catch (e) {
+        if (!mounted) return;
+        console.error(e);
+        setCourses([]);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   // Load user's study sets with card counts and course names (if provided by API)
@@ -137,7 +168,120 @@ const Study = () => {
   };
 
   // ---- COMPUTED PROGRESS ----
-  const totalProgress = 0;
+  const [totalProgress, setTotalProgress] = useState<number>(0);
+  const [perCourseProgress, setPerCourseProgress] = useState<
+    { course_id: number | null; course_name: string; overall_percent: number }[]
+  >([]);
+  const courseOptions = courses.map(c => c.name);
+
+  const visiblePerCourse = useMemo(() => {
+    if (perCourseProgress.length === 0) return [];
+    if (selectedCourse === "all" || !selectedCourse) return perCourseProgress;
+    // For a specific course selection, show only that course's progress bar
+    return perCourseProgress.filter((c) => c.course_name === selectedCourse);
+  }, [perCourseProgress, selectedCourse]);
+
+  // When course selection changes, derive totalProgress from perCourseProgress.
+  // This averages course-level percentages on the client for the "All courses" bar.
+  useEffect(() => {
+    if (!perCourseProgress || perCourseProgress.length === 0) {
+      setTotalProgress(0);
+      return;
+    }
+
+    if (selectedCourse === "all" || !selectedCourse) {
+      // Average progress across courses that have non-zero progress. This avoids
+      // diluting a partially-complete course by many untouched courses.
+      const nonZero = perCourseProgress.filter((c) => c.overall_percent > 0);
+      if (nonZero.length === 0) {
+        setTotalProgress(0);
+        return;
+      }
+      const sum = nonZero.reduce((acc, c) => acc + c.overall_percent, 0);
+      setTotalProgress(sum / nonZero.length);
+      return;
+    }
+
+    const match = perCourseProgress.find((c) => c.course_name === selectedCourse);
+    setTotalProgress(match ? match.overall_percent : 0);
+  }, [selectedCourse, perCourseProgress]);
+
+  // Load per-course progress by querying the backend once per course using
+  // /api/course_progress_by_course?course_id=<id>. The endpoint returns a
+  // single object with overall_percent as a 0-1 decimal for that course.
+  useEffect(() => {
+    if (!courses || courses.length === 0) {
+      setPerCourseProgress([]);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const results: { course_id: number | null; course_name: string; overall_percent: number }[] = [];
+        for (const c of courses) {
+          try {
+            const res = await fetch(`/api/course_progress_by_course?course_id=${c.id}`, {
+              credentials: "include",
+            });
+            if (!res.ok) continue;
+            const data = (await res.json().catch(() => ({}))) as {
+              course_id?: number | null;
+              course_name?: string;
+              overall_percent?: number;
+            };
+            const frac =
+              typeof data.overall_percent === "number" && !Number.isNaN(data.overall_percent)
+                ? Math.max(0, Math.min(1, data.overall_percent))
+                : 0;
+            results.push({
+              course_id: typeof data.course_id === "number" ? data.course_id : c.id,
+              course_name: data.course_name || c.name,
+              overall_percent: frac,
+            });
+          } catch {
+            // Ignore failures for individual courses
+          }
+        }
+
+        // Also load the synthetic 'No course' bucket (course_id=0)
+        try {
+          const res = await fetch(`/api/course_progress_by_course?course_id=0`, {
+            credentials: "include",
+          });
+          if (res.ok) {
+            const data = (await res.json().catch(() => ({}))) as {
+              course_id?: number | null;
+              course_name?: string;
+              overall_percent?: number;
+            };
+            const frac =
+              typeof data.overall_percent === "number" && !Number.isNaN(data.overall_percent)
+                ? Math.max(0, Math.min(1, data.overall_percent))
+                : 0;
+            results.push({
+              course_id: null,
+              course_name: data.course_name || "No course",
+              overall_percent: frac,
+            });
+          }
+        } catch {
+          // Ignore failure for 'No course' bucket
+        }
+        if (!cancelled) {
+          setPerCourseProgress(results);
+        }
+      } catch {
+        if (!cancelled) {
+          setPerCourseProgress([]);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [courses]);
 
   return (
     <div className="relative min-h-screen overflow-hidden px-4 pt-24 pb-12">
@@ -159,16 +303,93 @@ const Study = () => {
             {/* Progress Tracker */}
             <Card className="bg-[#4C1D3D]/70 backdrop-blur-xl border-pink-700/40 text-white shadow-xl shadow-pink-900/20">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Brain className="h-5 w-5 text-[#FB9590]" /> Study Progress
-                </CardTitle>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <CardTitle className="flex items-center gap-2">
+                    <Brain className="h-5 w-5 text-[#FB9590]" /> Study Progress
+                  </CardTitle>
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={selectedCourse}
+                      onValueChange={(val) => {
+                        setSelectedCourse(val);
+                        if (noMasteryMessage) {
+                          setNoMasteryMessage(null);
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="min-w-[160px] bg-[#852E4E]/60 border-pink-700/60 text-sm">
+                        <SelectValue placeholder={courseOptions.length ? "All courses" : "No courses"} />
+                      </SelectTrigger>
+                      <SelectContent className="bg-[#4C1D3D] text-white border-pink-700/60">
+                        {courseOptions.length > 0 ? (
+                          <>
+                            <SelectItem value="all">All courses</SelectItem>
+                            {courseOptions.map((c) => (
+                              <SelectItem key={c} value={c}>
+                                {c}
+                              </SelectItem>
+                            ))}
+                          </>
+                        ) : (
+                          <SelectItem value="none" disabled>
+                            No courses available
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      className="bg-[#FB9590] text-[#2A1023] hover:bg-[#FFBB94]"
+                      disabled={selectedCourse === "all"}
+                      onClick={() => {
+                        if (!totalProgress || Number.isNaN(totalProgress) || totalProgress <= 0) {
+                          setNoMasteryMessage(
+                            "We don't have enough quiz history yet to prioritize your studying. Take a few practice quizzes first so we can see what you need the most help with."
+                          );
+                          return;
+                        }
+                        if (noMasteryMessage) {
+                          setNoMasteryMessage(null);
+                        }
+                        const courseName = selectedCourse && selectedCourse !== "all" ? selectedCourse : "this course";
+                        const courseObj = courses.find((c) => c.name === selectedCourse);
+                        const courseId = courseObj?.id;
+                        navigate("/plan", { state: { courseName, courseId } });
+                      }}
+                    >
+                      Begin Studying
+                    </Button>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="flex justify-between text-sm">
-                  <span>Total Progress</span>
-                  <span>{totalProgress}%</span>
+                  <span>
+                    {selectedCourse === "all"
+                      ? "All courses"
+                      : (selectedCourse || "Total Progress")}
+                  </span>
+                  <span>{(totalProgress * 100).toFixed(3)}%</span>
                 </div>
-                <Progress value={totalProgress} className="bg-[#852E4E]" />
+                <Progress value={totalProgress * 100} className="bg-[#852E4E]" />
+
+                {selectedCourse === "all" && visiblePerCourse.length > 0 && (
+                  <div className="mt-4 space-y-2">
+                    {visiblePerCourse.map((c) => (
+                      <div key={c.course_id ?? "none"} className="space-y-1">
+                        <div className="flex justify-between text-xs text-pink-100">
+                          <span>{c.course_name}</span>
+                          <span>{(c.overall_percent * 100).toFixed(3)}%</span>
+                        </div>
+                        <Progress value={c.overall_percent * 100} className="bg-[#852E4E]" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {noMasteryMessage && (
+                  <p className="text-xs text-pink-200 max-w-md">
+                    {noMasteryMessage}
+                  </p>
+                )}
               </CardContent>
             </Card>
 
