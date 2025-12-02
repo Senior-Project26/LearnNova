@@ -109,6 +109,30 @@ def sanitize_katex(s: str) -> str:
         out = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", out)
         # 2) Replace HTML entities for inequalities
         out = out.replace("&gt;", ">").replace("&lt;", "<")
+
+        # 2b) Clean up some malformed math patterns commonly produced by the LLM
+        #     a) Collapse duplicated scalar equalities like "A=A=" -> "A = "
+        out = re.sub(r"\b([A-Za-z])\s*=\s*\1\s*=", r"\\1 = ", out)
+
+        #     b) If there's an odd number of "$$" delimiters, drop the last one to avoid
+        #        leaving a stray closing display-math marker which breaks KaTeX.
+        try:
+            dbl_count = out.count("$$")
+            if dbl_count % 2 == 1:
+                last_idx = out.rfind("$$")
+                if last_idx != -1:
+                    out = out[:last_idx] + out[last_idx + 2 :]
+        except Exception:
+            pass
+
+        #     c) Fix patterns like "\\begin{pmatrix}...\\end{pmatrix}$$" that are missing
+        #        the opening "$$" by wrapping them as a proper display block.
+        out = re.sub(
+            r"(?<!\$)\\begin\{pmatrix\}([\s\S]*?)\\end\{pmatrix\}\s*\$\$",
+            r"$$\\begin{pmatrix}\1\\end{pmatrix}$$",
+            out,
+        )
+
         # 3) Normalize common command forms
         #    3a) Fix square roots written as /sqrt(...) or sqrt(...)-> \sqrt{...}
         out = re.sub(r"/\s*sqrt\s*\(", r"\\sqrt{", out, flags=re.IGNORECASE)
@@ -611,8 +635,54 @@ def to_index_from_answer(ans: str | int | None, options: list[str]) -> int | Non
         return None
 
 
-def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
-    """Generate quiz questions using Gemini."""
+def generate_quiz_with_gemini(
+    summary: str,
+    count: int,
+    topics: list[str] | None = None,
+    topic_stats: dict[str, list[float | int]] | None = None,
+) -> list[dict]:
+    """Generate quiz questions using Gemini.
+
+    - topics: optional list of topic strings that questions should be assigned to.
+    - topic_stats: optional mapping { topic: [avg_difficulty (0-1), existing_count] } describing
+      how hard questions for that topic currently are and how many already exist.
+    """
+
+    topics_desc = ""
+    if topics:
+        safe_topics = [str(t).strip() for t in topics if str(t).strip()]
+        if safe_topics:
+            topics_desc = (
+                "\n\nTOPIC LIST (use these exact strings):\n- "
+                + "\n- ".join(sorted(set(safe_topics)))
+                + "\nFor EACH question, choose exactly one topic from this list and include it as the `topic` field."
+            )
+
+    stats_desc = ""
+    if topic_stats:
+        try:
+            # Build a compact JSON-like description for the model
+            lines = []
+            for k, v in topic_stats.items():
+                try:
+                    avg_d = float(v[0]) if len(v) > 0 else 0.0
+                except Exception:
+                    avg_d = 0.0
+                try:
+                    cnt = int(v[1]) if len(v) > 1 else 0
+                except Exception:
+                    cnt = 0
+                lines.append(f'  "{k}": [ {avg_d:.3f}, {cnt} ]')
+            if lines:
+                stats_desc = (
+                    "\n\nTOPIC DIFFICULTY/COUNTS (JSON map: topic -> [avg_difficulty, existing_count]):\n{\n"
+                    + ",\n".join(lines)
+                    + "\n}\n"
+                    + "Use avg_difficulty to tune hardness (higher -> make questions harder). "
+                    + "Use existing_count to keep topic coverage roughly uniform by giving slightly more questions to topics with lower counts."
+                )
+        except Exception:
+            stats_desc = ""
 
     user_prompt = (
         "Create a multiple-choice quiz from the SUMMARY below. "
@@ -635,7 +705,10 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
         "- Do NOT rephrase or lightly modify prior questions; use new scenarios, variables, constraints, and structures.\n"
         "- Balance conceptual vs computational vs edge-case questions; avoid repeating templates.\n"
         "- Distractors must be plausible and tied to specific misconceptions; avoid trivial variants.\n"
-        "Do not include prose outside of JSON.\n\nSUMMARY:\n" + summary
+        "Do not include prose outside of JSON."
+        + topics_desc
+        + stats_desc
+        + "\n\nSUMMARY:\n" + summary
     )
 
     resp = gemini_client.models.generate_content(
@@ -659,8 +732,9 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
                             "maxItems": 4,
                         },
                         "correctIndex": {"type": "integer", "minimum": 0, "maximum": 3},
+                        "topic": {"type": "string"},
                     },
-                    "required": ["question", "options", "correctIndex"],
+                    "required": ["question", "options", "correctIndex", "topic"],
                 },
             },
         },
@@ -705,10 +779,18 @@ def generate_quiz_with_gemini(summary: str, count: int) -> list[dict]:
             continue
         if not question or any(not o for o in options):
             continue
+        topic_val = q.get("topic")
+        topic_str = None
+        if topic_val is not None:
+            try:
+                topic_str = str(topic_val).strip() or None
+            except Exception:
+                topic_str = None
         cleaned.append({
             "question": sanitize_katex(question),
             "options": [sanitize_katex(o) for o in options],
             "correctIndex": ci,
+            "topic": topic_str,
         })
         if len(cleaned) >= count:
             break
@@ -905,56 +987,6 @@ def generate_flashcards_with_gemini(text: str, count: int) -> list[dict]:
         return []
 
 
-def generate_topics_from_text(text: str, count: int = 10) -> list[str]:
-    t = (text or "").strip()
-    if not t:
-        return []
-    prompt = (
-        "Extract exactly "
-        + str(count)
-        + " distinct topics from the CONTENT below as a JSON array of strings. "
-          "Topics should mix single words (e.g., 'derivatives', 'velocity', 'matrices') and short phrases (e.g., 'integration by parts', 'matrix multiplication', 'states of matter'). "
-          "No explanations; JSON array only.\n\nCONTENT:\n"
-        + t[:30000]
-    )
-    try:
-        resp = gemini_client.models.generate_content(
-            model="gemini-2.5-flash-lite",
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": {
-                    "type": "array",
-                    "minItems": count,
-                    "maxItems": count,
-                    "items": {"type": "string"},
-                },
-            },
-        )
-        raw = (getattr(resp, "text", None) or "").strip()
-        data = parse_json_lenient(raw or "[]")
-        arr = data if isinstance(data, list) else []
-        topics: list[str] = []
-        seen = set()
-        for s in arr:
-            try:
-                item = str(s).strip()
-            except Exception:
-                continue
-            if not item:
-                continue
-            key = item.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            topics.append(item[:80])
-            if len(topics) >= count:
-                break
-        return topics
-    except Exception:
-        return []
-
-
 # ============================================================================
 # ROUTES - AUTHENTICATION
 # ============================================================================
@@ -1001,130 +1033,6 @@ def firebase_login():
     except Exception as e:
         return jsonify({"error": str(e)}), 401
 
-
-@app.get("/api/recent_sets")
-def list_recent_sets():
-    """Return recent study sets and study guides for the current user ordered by created_at DESC.
-    Output items: [{ type: 'study_set'|'study_guide', id, name?, title?, created_at }]
-    """
-    user_id = session.get("user_id")
-    if not user_id:
-        return jsonify(error="unauthorized"), 401
-    conn = get_connection()
-    if not conn:
-        return jsonify(error="Database connection error"), 500
-    try:
-        cur = conn.cursor()
-        # study sets
-        try:
-            cur.execute(
-                "SELECT id, name, created_at FROM study_sets WHERE user_id = %s",
-                (user_id,),
-            )
-            ss_rows = cur.fetchall()
-        except Exception:
-            ss_rows = []
-        # study guides
-        try:
-            cur.execute(
-                "SELECT id, title, created_at FROM study_guides WHERE user_id = %s",
-                (user_id,),
-            )
-            sg_rows = cur.fetchall()
-        except Exception:
-            sg_rows = []
-        # notes
-        try:
-            cur.execute(
-                "SELECT id, title, created_at FROM notes WHERE user_id = %s",
-                (user_id,),
-            )
-            note_rows = cur.fetchall()
-        except Exception:
-            note_rows = []
-        # summaries
-        try:
-            cur.execute(
-                "SELECT id, title, created_at FROM summaries WHERE user_id = %s",
-                (user_id,),
-            )
-            sum_rows = cur.fetchall()
-        except Exception:
-            sum_rows = []
-        cur.close()
-        items = (
-            [
-                {"type": "study_set", "id": r[0], "name": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
-                for r in ss_rows
-            ]
-            + [
-                {"type": "study_guide", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
-                for r in sg_rows
-            ]
-            + [
-                {"type": "note", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
-                for r in note_rows
-            ]
-            + [
-                {"type": "summary", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
-                for r in sum_rows
-            ]
-        )
-        # Sort by created_at DESC, nulls last, and limit to top 5
-        items.sort(key=lambda x: (x.get("created_at") is None, x.get("created_at") or ""), reverse=True)
-        items = items[:5]
-        return jsonify(items=items), 200
-    except Exception as e:
-        return jsonify(error=str(e)), 500
-    finally:
-        conn.close()
-
-
-@app.get("/api/dashboard_recent_sets")
-def list_recent_dashboard_sets():
-    """Return only recent study sets and study guides for the current user ordered by created_at DESC.
-    Output items: [{ type: 'study_set'|'study_guide', id, name?, title?, created_at }].
-    """
-    user_id = session.get("user_id")
-    if not user_id:
-        return jsonify(error="unauthorized"), 401
-    conn = get_connection()
-    if not conn:
-        return jsonify(error="Database connection error"), 500
-    try:
-        cur = conn.cursor()
-        # study sets
-        cur.execute(
-            "SELECT id, name, created_at FROM study_sets WHERE user_id = %s",
-            (user_id,),
-        )
-        ss_rows = cur.fetchall()
-        # study guides
-        try:
-            cur.execute(
-                "SELECT id, title, created_at FROM study_guides WHERE user_id = %s",
-                (user_id,),
-            )
-            sg_rows = cur.fetchall()
-        except Exception:
-            sg_rows = []
-        cur.close()
-        items = (
-            [
-                {"type": "study_set", "id": r[0], "name": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
-                for r in ss_rows
-            ]
-            + [
-                {"type": "study_guide", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
-                for r in sg_rows
-            ]
-        )
-        items.sort(key=lambda x: (x.get("created_at") is None, x.get("created_at") or ""), reverse=True)
-        return jsonify(items=items), 200
-    except Exception as e:
-        return jsonify(error=str(e)), 500
-    finally:
-        conn.close()
 
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -1200,31 +1108,572 @@ def signup():
         conn.close()
 
 
-@app.patch("/api/study_sets/<int:sid>")
-def update_study_set(sid: int):
-    """Update properties of a study set (currently only name) for the current user."""
+# ============================================================================
+# ROUTES - STUDY PAGE
+# ============================================================================
+
+@app.get("/api/recent_sets")
+def list_recent_sets():
+    """Return recent study sets and study guides for the current user ordered by created_at DESC.
+    Output items: [{ type: 'study_set'|'study_guide', id, name?, title?, created_at }]
+    """
     user_id = session.get("user_id")
     if not user_id:
         return jsonify(error="unauthorized"), 401
-    data = request.get_json(silent=True) or {}
-    new_name = str(data.get("name") or "").strip()
-    if not new_name:
-        return jsonify(error="name is required"), 400
     conn = get_connection()
     if not conn:
         return jsonify(error="Database connection error"), 500
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM study_sets WHERE id = %s AND user_id = %s", (sid, user_id))
+        # study sets
+        try:
+            cur.execute(
+                "SELECT id, name, created_at FROM study_sets WHERE user_id = %s",
+                (user_id,),
+            )
+            ss_rows = cur.fetchall()
+        except Exception:
+            ss_rows = []
+        # study guides
+        try:
+            cur.execute(
+                "SELECT id, title, created_at FROM study_guides WHERE user_id = %s",
+                (user_id,),
+            )
+            sg_rows = cur.fetchall()
+        except Exception:
+            sg_rows = []
+        # notes
+        try:
+            cur.execute(
+                "SELECT id, title, created_at FROM notes WHERE user_id = %s",
+                (user_id,),
+            )
+            note_rows = cur.fetchall()
+        except Exception:
+            note_rows = []
+        # summaries
+        try:
+            cur.execute(
+                "SELECT id, title, created_at FROM summaries WHERE user_id = %s",
+                (user_id,),
+            )
+            sum_rows = cur.fetchall()
+        except Exception:
+            sum_rows = []
+        cur.close()
+        items = (
+            [
+                {"type": "study_set", "id": r[0], "name": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in ss_rows
+            ]
+            + [
+                {"type": "study_guide", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in sg_rows
+            ]
+            + [
+                {"type": "note", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in note_rows
+            ]
+            + [
+                {"type": "summary", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in sum_rows
+            ]
+        )
+        # Sort by created_at DESC, nulls last, and limit to top 5
+        items.sort(key=lambda x: (x.get("created_at") is None, x.get("created_at") or ""), reverse=True)
+        items = items[:5]
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+@app.get("/api/course_progress")
+def course_progress():
+    """Compute mastery-based progress for a given course for the current user.
+
+    Query params:
+      - course_id: integer id of the course
+
+    For each topic in this course, we look at quiz_questions that belong to quizzes
+    for this course and current user, where quiz_questions.topic matches the topic title
+    (case-insensitive). For each question we define a per-question score:
+
+      if max_streak < 3 OR avg_confidence < 3.5: use mastery (0-5)
+      else: 1.0
+
+    where avg_confidence is taken as the stored confidence (0-5) on the question.
+
+    Per-topic score is the average of these question scores for that topic.
+    Overall progress is the average of per-topic scores across topics in the course,
+    treating topics with no questions as 0. The final overall_percent is scaled to 0-100
+    by dividing by 5 and multiplying by 100.
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+
+    try:
+        raw_course_id = request.args.get("course_id")
+        if raw_course_id is None:
+            return jsonify(error="course_id required"), 400
+        try:
+            course_id = int(raw_course_id)
+        except Exception:
+            return jsonify(error="course_id must be an integer"), 400
+
+        conn = get_connection()
+        if not conn:
+            return jsonify(error="Database connection error"), 500
+
+        cur = conn.cursor()
+        # Ensure course belongs to current user
+        cur.execute(
+            "SELECT id FROM courses WHERE id = %s AND created_by = %s",
+            (course_id, user_id),
+        )
         row = cur.fetchone()
         if not row:
+            cur.close()
+            conn.close()
             return jsonify(error="not found"), 404
-        cur.execute("UPDATE study_sets SET name = %s WHERE id = %s", (new_name, sid))
-        conn.commit()
+
+        # For each topic in this course, compute average question score.
+        # Include questions from quizzes in this course AND quizzes with no course (course_id IS NULL)
+        # when their topic matches the topic title.
+        cur.execute(
+            """
+            SELECT
+              t.id,
+              t.title,
+              COALESCE(
+                AVG(
+                  CASE
+                    WHEN qq.max_streak < 3
+                         OR COALESCE(qq.confidence, 0) < 3.5
+                    THEN COALESCE(qq.mastery, 0)
+                    ELSE 1.0
+                  END
+                ),
+                0
+              ) AS topic_score
+            FROM topics t
+            LEFT JOIN quizzes q
+              ON q.created_by = %s
+             AND (q.course_id = t.course_id OR q.course_id IS NULL)
+            LEFT JOIN quiz_questions qq
+              ON qq.quiz_id = q.id
+             AND lower(TRIM(COALESCE(qq.topic, ''))) = lower(TRIM(t.title))
+             AND qq.topic IS NOT NULL
+             AND qq.topic != ''
+            WHERE t.course_id = %s
+            GROUP BY t.id, t.title
+            ORDER BY t.id
+            """,
+            (user_id, course_id),
+        )
+        rows = cur.fetchall()
         cur.close()
-        return jsonify(id=sid, name=new_name), 200
+        conn.close()
+
+        per_topic = []
+        total_score = 0.0
+        topic_count = 0
+        for tid, title, topic_score in rows:
+            score = float(topic_score) if topic_score is not None else 0.0
+            per_topic.append({"topic_id": tid, "title": title, "score": score})
+            total_score += score
+            topic_count += 1
+
+        overall_mastery = 0.0
+        overall_percent = 0.0
+        if topic_count > 0:
+            overall_mastery = total_score / float(topic_count)
+            # mastery is 0-5; scale to 0-100
+            overall_percent = max(0.0, min(100.0, (overall_mastery / 5.0) * 100.0))
+
+        return (
+            jsonify(
+                per_topic=per_topic,
+                overall_mastery=overall_mastery,
+                overall_percent=overall_percent,
+            ),
+            200,
+        )
     except Exception as e:
-        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.get("/api/course_low_mastery_topics")
+def course_low_mastery_topics():
+    """Return topics in a course whose mastery-based score is below 3.5.
+
+    Uses the same scoring rule and topic aggregation as /api/course_progress,
+    but filters the per-topic list on the backend and only returns topics with
+    score < 3.5 for the current user and given course.
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+
+    conn = None
+    try:
+        raw_course_id = request.args.get("course_id")
+        if raw_course_id is None:
+            return jsonify(error="course_id required"), 400
+        try:
+            course_id = int(raw_course_id)
+        except Exception:
+            return jsonify(error="course_id must be an integer"), 400
+
+        conn = get_connection()
+        if not conn:
+            return jsonify(error="Database connection error"), 500
+
+        cur = conn.cursor()
+        # Ensure course belongs to current user
+        cur.execute(
+            "SELECT id FROM courses WHERE id = %s AND created_by = %s",
+            (course_id, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            conn.close()
+            return jsonify(error="not found"), 404
+
+        # Reuse the same aggregation query as course_progress to compute
+        # per-topic scores for this course.
+        cur.execute(
+            """
+            SELECT
+              t.id,
+              t.title,
+              COALESCE(
+                AVG(
+                  CASE
+                    WHEN qq.max_streak < 3
+                         OR COALESCE(qq.confidence, 0) < 3.5
+                    THEN COALESCE(qq.mastery, 0)
+                    ELSE 1.0
+                  END
+                ),
+                0
+              ) AS topic_score
+            FROM topics t
+            LEFT JOIN quizzes q
+              ON q.created_by = %s
+             AND (q.course_id = t.course_id OR q.course_id IS NULL)
+            LEFT JOIN quiz_questions qq
+              ON qq.quiz_id = q.id
+             AND lower(TRIM(COALESCE(qq.topic, ''))) = lower(TRIM(t.title))
+             AND qq.topic IS NOT NULL
+             AND qq.topic != ''
+            WHERE t.course_id = %s
+            GROUP BY t.id, t.title
+            ORDER BY t.id
+            """,
+            (user_id, course_id),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        items = []
+        for tid, title, topic_score in rows:
+            score = float(topic_score) if topic_score is not None else 0.0
+            if score < 3.5:
+                items.append({"topic_id": tid, "title": title, "score": score})
+
+        return jsonify(items=items), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/course_progress_all")
+def course_progress_all():
+    """Compute mastery-based progress across all topics for the current user.
+
+    Uses the same per-question scoring rule as course_progress, but aggregates
+    over all quizzes created by the user (including quizzes with no course).
+
+    For each distinct non-empty topic string on quiz_questions for this user,
+    we compute:
+
+      per-question score = mastery (0-5) if max_streak < 3 OR confidence < 3.5
+                         = 1.0 otherwise
+
+    Per-topic score is the average of these per-question scores.
+    Overall progress is the average of per-topic scores across all topics.
+    The API returns overall_percent as a 0-1 decimal, consistent with the
+    front-end's scaling to 0-100.
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              NULLIF(TRIM(COALESCE(qq.topic, '')), '') AS title,
+              AVG(
+                CASE
+                  WHEN qq.max_streak < 3
+                       OR COALESCE(qq.confidence, 0) < 3.5
+                  THEN COALESCE(qq.mastery, 0)
+                  ELSE 1.0
+                END
+              ) AS topic_score
+            FROM quizzes q
+            JOIN quiz_questions qq
+              ON qq.quiz_id = q.id
+            WHERE q.created_by = %s
+              AND NULLIF(TRIM(COALESCE(qq.topic, '')), '') IS NOT NULL
+            GROUP BY NULLIF(TRIM(COALESCE(qq.topic, '')), '')
+            ORDER BY title
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        per_topic = []
+        total_score = 0.0
+        topic_count = 0
+        for title, topic_score in rows:
+            score = float(topic_score) if topic_score is not None else 0.0
+            per_topic.append({"title": title, "score": score})
+            total_score += score
+            topic_count += 1
+
+        overall_mastery = 0.0
+        overall_percent = 0.0
+        if topic_count > 0:
+            overall_mastery = total_score / float(topic_count)
+            # mastery is 0-5; expose as 0-1 decimal for the client
+            overall_percent = max(0.0, min(1.0, overall_mastery / 5.0))
+
+        return (
+            jsonify(
+                per_topic=per_topic,
+                overall_mastery=overall_mastery,
+                overall_percent=overall_percent,
+            ),
+            200,
+        )
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.get("/api/course_progress_by_course")
+def course_progress_by_course():
+    """Return per-course mastery-based progress for the current user, including 'no course'.
+
+    Uses the same scoring rule as course_progress:
+      per-question score = mastery (0-5) if max_streak < 3 OR confidence < 3.5, else 1.0.
+
+    For each distinct (course_id, topic) pair we compute the average question score for that
+    topic in that course, then average topic scores per course to get a course-level score.
+    The response exposes overall_percent as a 0-1 decimal per course.
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+
+    # IMPORTANT: only compute progress for the single course specified
+    # by course_id in the query string. Do not include any other courses.
+    raw_course_id = request.args.get("course_id")
+    if raw_course_id is None:
+        return jsonify(error="course_id required"), 400
+    try:
+        course_id = int(raw_course_id)
+    except Exception:
+        return jsonify(error="course_id must be an integer"), 400
+
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # Pull raw per-question data only for quizzes that belong to this course.
+        # Special case: course_id == 0 represents the 'no course' bucket (q.course_id IS NULL).
+        if course_id == 0:
+            cur.execute(
+                """
+                SELECT
+                  q.course_id,
+                  NULLIF(TRIM(COALESCE(qq.topic, '')), '') AS topic,
+                  qq.mastery,
+                  qq.max_streak,
+                  qq.confidence
+                FROM quizzes q
+                JOIN quiz_questions qq
+                  ON qq.quiz_id = q.id
+                WHERE q.created_by = %s
+                  AND q.course_id IS NULL
+                  AND NULLIF(TRIM(COALESCE(qq.topic, '')), '') IS NOT NULL
+                """,
+                (user_id,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT
+                  q.course_id,
+                  NULLIF(TRIM(COALESCE(qq.topic, '')), '') AS topic,
+                  qq.mastery,
+                  qq.max_streak,
+                  qq.confidence
+                FROM quizzes q
+                JOIN quiz_questions qq
+                  ON qq.quiz_id = q.id
+                WHERE q.created_by = %s
+                  AND q.course_id = %s
+                  AND NULLIF(TRIM(COALESCE(qq.topic, '')), '') IS NOT NULL
+                """,
+                (user_id, course_id),
+            )
+        rows = cur.fetchall()
+
+        # Build per-course, per-topic score lists in Python.
+        # course_topic_scores[cid][topic] = [per-question scores]
+        course_topic_scores: dict[object, dict[str, list[float]]] = {}
+        for cid, topic, mastery, max_streak, confidence in rows:
+            if (cid is None and course_id != 0) or topic is None:
+                continue
+            try:
+                m_val = float(mastery) if mastery is not None else 0.0
+            except Exception:
+                m_val = 0.0
+            try:
+                streak = int(max_streak) if max_streak is not None else 0
+            except Exception:
+                streak = 0
+            try:
+                conf = float(confidence) if confidence is not None else 0.0
+            except Exception:
+                conf = 0.0
+
+            if streak < 3 or conf < 3.5:
+                score = m_val  # use mastery 0-5
+            else:
+                score = 1.0
+
+            bucket = course_topic_scores.setdefault(cid, {})
+            lst = bucket.setdefault(str(topic), [])
+            lst.append(score)
+
+
+        # Now compute per-course mastery: average topic scores per course.
+
+        course_scores: dict[object, float] = {}
+        for cid, topics in course_topic_scores.items():
+            topic_scores: list[float] = []
+            for _, scores in topics.items():
+                if not scores:
+                    continue
+                topic_scores.append(sum(scores) / float(len(scores)))
+            if not topic_scores:
+                continue
+            course_scores[cid] = sum(topic_scores) / float(len(topic_scores))
+
+        # Fetch the name for this specific course_id
+        name = ""
+        if course_id == 0:
+            # Synthetic 'No course' bucket
+            name = "No course"
+        elif course_scores:
+            cur.execute(
+                "SELECT name FROM courses WHERE created_by = %s AND id = %s",
+                (user_id, course_id),
+            )
+            for s in cur.fetchall():
+                name = s[0]
+
+        # Build a single result entry for this course (if we have any data).
+        key_id = None if course_id == 0 else course_id
+        if key_id not in course_scores:
+            # No questions/topics yet for this course -> 0 progress
+            overall_mastery = 0.0
+        else:
+            overall_mastery = course_scores[key_id]
+
+
+        overall_percent = max(0.0, min(1.0, overall_mastery / 5.0))
+
+        return (
+            jsonify(
+                course_id=None if course_id == 0 else course_id,
+                course_name=name,
+                overall_mastery=overall_mastery,
+                overall_percent=overall_percent,
+            ),
+            200,
+        )
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.get("/api/dashboard_recent_sets")
+def list_recent_dashboard_sets():
+    """Return only recent study sets and study guides for the current user ordered by created_at DESC.
+    Output items: [{ type: 'study_set'|'study_guide', id, name?, title?, created_at }].
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        # study sets
+        cur.execute(
+            "SELECT id, name, created_at FROM study_sets WHERE user_id = %s",
+            (user_id,),
+        )
+        ss_rows = cur.fetchall()
+        # study guides
+        try:
+            cur.execute(
+                "SELECT id, title, created_at FROM study_guides WHERE user_id = %s",
+                (user_id,),
+            )
+            sg_rows = cur.fetchall()
+        except Exception:
+            sg_rows = []
+        cur.close()
+        items = (
+            [
+                {"type": "study_set", "id": r[0], "name": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in ss_rows
+            ]
+            + [
+                {"type": "study_guide", "id": r[0], "title": r[1], "created_at": (r[2].isoformat() if r[2] else None)}
+                for r in sg_rows
+            ]
+        )
+        items.sort(key=lambda x: (x.get("created_at") is None, x.get("created_at") or ""), reverse=True)
+        return jsonify(items=items), 200
+    except Exception as e:
         return jsonify(error=str(e)), 500
     finally:
         conn.close()
@@ -1295,6 +1744,37 @@ def list_courses():
 # ============================================================================
 # ROUTES - STUDY SETS
 # ============================================================================
+
+
+@app.patch("/api/study_sets/<int:sid>")
+def update_study_set(sid: int):
+    """Update properties of a study set (currently only name) for the current user."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    new_name = str(data.get("name") or "").strip()
+    if not new_name:
+        return jsonify(error="name is required"), 400
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM study_sets WHERE id = %s AND user_id = %s", (sid, user_id))
+        row = cur.fetchone()
+        if not row:
+            return jsonify(error="not found"), 404
+        cur.execute("UPDATE study_sets SET name = %s WHERE id = %s", (new_name, sid))
+        conn.commit()
+        cur.close()
+        return jsonify(id=sid, name=new_name), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
 
 @app.post("/api/study_sets")
 def create_study_set():
@@ -1730,6 +2210,57 @@ def rename_note(nid: int):
 # ROUTES - QUIZZES
 # ============================================================================
 
+
+def generate_topics_from_text(text: str, count: int = 10) -> list[str]:
+    t = (text or "").strip()
+    if not t:
+        return []
+    prompt = (
+        "Extract exactly "
+        + str(count)
+        + " distinct topics from the CONTENT below as a JSON array of strings. "
+          "Topics should mix single words (e.g., 'derivatives', 'velocity', 'matrices') and short phrases (e.g., 'integration by parts', 'matrix multiplication', 'states of matter'). "
+          "No explanations; JSON array only.\n\nCONTENT:\n"
+        + t[:30000]
+    )
+    try:
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": {
+                    "type": "array",
+                    "minItems": count,
+                    "maxItems": count,
+                    "items": {"type": "string"},
+                },
+            },
+        )
+        raw = (getattr(resp, "text", None) or "").strip()
+        data = parse_json_lenient(raw or "[]")
+        arr = data if isinstance(data, list) else []
+        topics: list[str] = []
+        seen = set()
+        for s in arr:
+            try:
+                item = str(s).strip()
+            except Exception:
+                continue
+            if not item:
+                continue
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            topics.append(item[:80])
+            if len(topics) >= count:
+                break
+        return topics
+    except Exception:
+        return []
+
+
 @app.delete("/api/quizzes/<int:qid>")
 def delete_quiz(qid: int):
     """Delete a quiz owned by the current session user along with its questions."""
@@ -1785,6 +2316,28 @@ def get_quiz(qzid: int):
         unanswered_row = cur.fetchone()
         unanswered_count = int(unanswered_row[0] or 0)
         completed = unanswered_count == 0
+        # Fallback: if the stored score already matches or exceeds
+        # original_count, treat the quiz as completed for purposes of review
+        # even if unanswered_count is non-zero due to edge cases. If
+        # original_count is missing/zero (older quizzes), fall back to the
+        # actual number of quiz_questions for this quiz.
+        try:
+            score_val = int(q[2] or 0)
+        except Exception:
+            score_val = 0
+        try:
+            orig_count = int(q[3] or 0)
+        except Exception:
+            orig_count = 0
+        if orig_count <= 0:
+            cur.execute("SELECT COUNT(*) FROM quiz_questions WHERE quiz_id = %s", (qzid,))
+            row_cnt = cur.fetchone()
+            try:
+                orig_count = int((row_cnt[0] if row_cnt else 0) or 0)
+            except Exception:
+                orig_count = 0
+        if not completed and orig_count > 0 and score_val >= orig_count:
+            completed = True
         # Determine if spaced repetition is active for this quiz (any next_review set)
         cur.execute("SELECT EXISTS (SELECT 1 FROM quiz_questions WHERE quiz_id = %s AND next_review IS NOT NULL)", (qzid,))
         has_spaced = bool(cur.fetchone()[0])
@@ -1802,8 +2355,8 @@ def get_quiz(qzid: int):
         )
         due_rows = cur.fetchall()
 
-        # Backfill if needed when practicing (completed or spaced active)
-        orig_count = int(q[3] or 0)
+        # Backfill if needed when practicing (completed or spaced active).
+        # orig_count here is the effective quiz length computed above.
         # Cap current due rows to original_count if defined
         if orig_count > 0 and len(due_rows) > orig_count:
             due_rows = due_rows[:orig_count]
@@ -1811,9 +2364,6 @@ def get_quiz(qzid: int):
         # Only enter spaced/practice mode when the quiz is fully completed.
         # In-progress quizzes should continue with the original flow (ordered by question_number).
         practice_mode = completed
-        # Restrict due set to questions from the original instance only
-        if practice_mode and orig_count > 0:
-            due_rows = [r for r in due_rows if int(r[1] or 0) <= orig_count]
         if practice_mode and orig_count > 0 and len(due_rows) < orig_count and source_summary.strip():
             need = orig_count - len(due_rows)
             # Collect existing texts and topics
@@ -1828,11 +2378,15 @@ def get_quiz(qzid: int):
             all_qs = cur.fetchall()
             existing_texts = set()
             existing_topics = set()
+            topic_counts: dict[str, int] = {}
             for question_text, topic in all_qs:
                 tnorm = (question_text or '').strip().lower()
                 existing_texts.add(tnorm)
                 if topic:
-                    existing_topics.add(str(topic).strip())
+                    tkey = str(topic).strip()
+                    if tkey:
+                        existing_topics.add(tkey)
+                        topic_counts[tkey] = topic_counts.get(tkey, 0) + 1
 
             topic_list = sorted(t for t in existing_topics if t)
             # Load per-quiz topic difficulty map
@@ -1846,15 +2400,20 @@ def get_quiz(qzid: int):
                 td_map = {}
             difficulty_lines = []
             harder_topics: list[str] = []
+            topic_stats: dict[str, list[float | int]] = {}
             for t in topic_list:
                 dval = td_map.get(t, None)
+                avg_d = 0.0
                 if isinstance(dval, (int, float)):
                     try:
-                        dclamp = max(0.0, min(1.0, float(dval)))
+                        avg_d = max(0.0, min(1.0, float(dval)))
                     except Exception:
-                        dclamp = 0.5
-                    boosted = max(0.0, min(1.0, dclamp + 0.10))
-                    difficulty_lines.append(f"- {t}: target difficulty {boosted:.2f} (previous {dclamp:.2f})")
+                        avg_d = 0.0
+                cnt = int(topic_counts.get(t, 0))
+                topic_stats[t] = [avg_d, cnt]
+                if avg_d > 0.0:
+                    boosted = max(0.0, min(1.0, avg_d + 0.10))
+                    difficulty_lines.append(f"- {t}: target difficulty {boosted:.2f} (previous {avg_d:.2f})")
                     harder_topics.append(t)
             diff_note = ("\n\nDIFFICULTY TARGETS (by topic):\n" + "\n".join(difficulty_lines)) if difficulty_lines else ""
             topic_note = ("\n\nONLY create questions about these topics (balance coverage, maximize variety, avoid duplicates): " + ", ".join(topic_list)) if topic_list else ""
@@ -1880,7 +2439,7 @@ def get_quiz(qzid: int):
             variety_note = "\n\nVARY question styles (conceptual, computational, edge cases), and increase complexity according to target difficulty."
             gen_input_summary = source_summary + topic_note + diff_note + harder_note + avoid_note + variety_note
             try:
-                fresh = generate_quiz_with_gemini(gen_input_summary, max(need * 2, need + 2))
+                fresh = generate_quiz_with_gemini(gen_input_summary, max(need * 2, need + 2), topic_list, topic_stats)
             except Exception:
                 fresh = []
             # Simple token-overlap de-dup (no regex): lowercase, strip basic punctuation, split on whitespace
@@ -1939,7 +2498,12 @@ def get_quiz(qzid: int):
             while len(new_cleaned) < need and attempts < 2:
                 attempts += 1
                 try:
-                    more = generate_quiz_with_gemini(gen_input_summary, max((need - len(new_cleaned)) * 3, (need - len(new_cleaned)) + 2))
+                    more = generate_quiz_with_gemini(
+                        gen_input_summary,
+                        max((need - len(new_cleaned)) * 3, (need - len(new_cleaned)) + 2),
+                        topic_list,
+                        topic_stats,
+                    )
                 except Exception:
                     more = []
                 for qd in more:
@@ -2012,7 +2576,7 @@ def get_quiz(qzid: int):
                                 correct_answer,
                                 None,
                                 None,
-                                qd.get('_assigned_topic'),
+                                qd.get('topic'),
                                 q[1],  # quiz created_at
                                 q[1],  # set next_review to created_at so it appears first
                             ),
@@ -2020,26 +2584,24 @@ def get_quiz(qzid: int):
                         inserted_any = True
                     except Exception:
                         continue
-                if inserted_any:
-                    conn.commit()
-                    # refresh due_rows
-                    cur.execute(
-                        """
-                        SELECT id, question_number, question, options, correct_answer, user_answer, is_correct, confidence,
-                               COALESCE(times_correct,0), COALESCE(times_seen,0), COALESCE(correct_streak,0), COALESCE(option_counts, '{}')
-                        FROM quiz_questions
-                        WHERE quiz_id = %s AND next_review IS NOT NULL AND next_review <= NOW()
-                        ORDER BY next_review ASC, COALESCE(confidence, 999) ASC
-                        """,
-                        (qzid,),
-                    )
-                    due_rows = cur.fetchall()
-                    # Restrict to original block again after refresh
-                    if practice_mode and orig_count > 0:
-                        due_rows = [r for r in due_rows if int(r[1] or 0) <= orig_count]
-                    # Cap refreshed due rows to original_count as well
-                    if orig_count > 0 and len(due_rows) > orig_count:
-                        due_rows = due_rows[:orig_count]
+                conn.commit()
+                # refresh due_rows: include all questions for this quiz_id
+                # that are due (next_review <= NOW()); we'll cap to
+                # original_count later.
+                cur.execute(
+                    """
+                    SELECT id, question_number, question, options, correct_answer, user_answer, is_correct, confidence,
+                           COALESCE(times_correct,0), COALESCE(times_seen,0), COALESCE(correct_streak,0), COALESCE(option_counts, '{}')
+                    FROM quiz_questions
+                    WHERE quiz_id = %s AND next_review IS NOT NULL AND next_review <= NOW()
+                    ORDER BY next_review ASC, COALESCE(confidence, 999) ASC
+                    """,
+                    (qzid,),
+                )
+                due_rows = cur.fetchall()
+                # Cap refreshed due rows to original_count as well
+                if orig_count > 0 and len(due_rows) > orig_count:
+                    due_rows = due_rows[:orig_count]
 
         # Choose which rows to return
         if practice_mode:
@@ -2160,6 +2722,7 @@ def create_quiz():
     data = request.get_json(silent=True) or {}
     summary: str = (data.get("summary") or "").strip()
     size: str = (data.get("size") or "small").strip().lower()
+    course_id = data.get("course_id")
     if not summary:
         return jsonify(error="Missing summary"), 400
 
@@ -2194,7 +2757,8 @@ def create_quiz():
             topics_list = []
 
     try:
-        questions = generate_quiz_with_gemini(summary, count)
+        # Pass topics_list so Gemini can assign a topic field per question
+        questions = generate_quiz_with_gemini(summary, count, topics_list)
     except Exception as e:
         return jsonify(error=f"quiz generation failed: {e}"), 500
     if not questions:
@@ -2214,14 +2778,16 @@ def create_quiz():
             return jsonify(error="invalid session: user not found. Please sign in again."), 401
         cur.execute(
             """
-            INSERT INTO quizzes (topics, created_by, score, original_count, source_summary)
-            VALUES (%s, %s, 0, %s, %s)
+            INSERT INTO quizzes (topics, created_by, score, original_count, source_summary, course_id)
+            VALUES (%s, %s, 0, %s, %s, %s)
             RETURNING id
             """,
-            (topics_list if topics_list else [], user_id, count, summary),
+            (topics_list if topics_list else [], user_id, count, summary, course_id),
         )
         quiz_id = cur.fetchone()[0]
 
+        # Assign topics to generated questions when possible so progress can be computed per topic.
+        # Prefer any topic Gemini returns per-question (q['topic']); otherwise, leave topic NULL.
         inserted_question_ids: list[int] = []
         for i, q in enumerate(questions[:count], start=1):
             question = q.get("question")
@@ -2233,13 +2799,18 @@ def create_quiz():
                 correct_answer = None
             if not question or correct_answer is None:
                 continue
+            raw_topic = q.get("topic")
+            try:
+                assigned_topic = (str(raw_topic).strip() or None) if raw_topic is not None else None
+            except Exception:
+                assigned_topic = None
             cur.execute(
                 """
-                INSERT INTO quiz_questions (quiz_id, question_number, question, options, correct_answer, user_answer, is_correct)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO quiz_questions (quiz_id, question_number, question, options, correct_answer, user_answer, is_correct, topic)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (quiz_id, i, question, options, correct_answer, None, None),
+                (quiz_id, i, question, options, correct_answer, None, None, assigned_topic),
             )
             qid = cur.fetchone()[0]
             inserted_question_ids.append(qid)
@@ -2281,9 +2852,10 @@ def record_quiz_answer():
         return jsonify(error="quiz_id required"), 400
     if not question_id and not isinstance(question_number, int):
         return jsonify(error="question_id or question_number required"), 400
-    # At least one of user_answer or confidence must be provided
-    if not user_answer and confidence is None:
-        return jsonify(error="user_answer or confidence required"), 400
+    # This endpoint records the answer itself; confidence adjustments are handled
+    # by the /api/quiz/confidence endpoint.
+    if not user_answer:
+        return jsonify(error="user_answer required"), 400
 
     conn = get_connection()
     if not conn:
@@ -2297,185 +2869,146 @@ def record_quiz_answer():
 
         if not question_id:
             cur.execute(
-                "SELECT id, correct_answer, is_correct, interval, topic, COALESCE(correct_streak, 0), options, option_counts FROM quiz_questions WHERE quiz_id = %s AND question_number = %s",
+                "SELECT id, correct_answer, is_correct, interval, next_review, topic, COALESCE(correct_streak, 0), COALESCE(max_streak, 0), options, option_counts FROM quiz_questions WHERE quiz_id = %s AND question_number = %s",
                 (quiz_id, question_number),
             )
         else:
             cur.execute(
-                "SELECT id, correct_answer, is_correct, interval, topic, COALESCE(correct_streak, 0), options, option_counts FROM quiz_questions WHERE id = %s AND quiz_id = %s",
+                "SELECT id, correct_answer, is_correct, interval, next_review, topic, COALESCE(correct_streak, 0), COALESCE(max_streak, 0), options, option_counts FROM quiz_questions WHERE id = %s AND quiz_id = %s",
                 (question_id, quiz_id),
             )
         qrow = cur.fetchone()
         if not qrow:
             return jsonify(error="question not found"), 404
-        qid, correct_answer, prev_is_correct, prev_interval, topic, prev_streak, q_options, q_option_counts = qrow
+        qid, correct_answer, prev_is_correct, prev_interval, prev_next_review, topic, prev_streak, prev_max_streak, q_options, q_option_counts = qrow
 
         score_incremented = False
-        is_correct = None
+        is_correct = (user_answer == (correct_answer or "")) if user_answer else False
 
-        if user_answer:
-            is_correct = (user_answer == (correct_answer or "")) if user_answer else False
-            # Determine confidence to persist in this update
-            # If incorrect and confidence not provided, store 0
-            conf_to_set = confidence
-            if conf_to_set is None and is_correct is False:
-                conf_to_set = 0
-            if conf_to_set is not None:
-                cur.execute(
-                    "UPDATE quiz_questions SET user_answer = %s, is_correct = %s, confidence = %s WHERE id = %s",
-                    (user_answer or None, is_correct, conf_to_set, qid),
-                )
-            else:
-                cur.execute(
-                    "UPDATE quiz_questions SET user_answer = %s, is_correct = %s WHERE id = %s",
-                    (user_answer or None, is_correct, qid),
-                )
+        # Determine confidence to persist in this update. If incorrect and confidence not
+        # provided, store -1; mastery/interval will be handled on the confidence endpoint.
+        conf_to_set = confidence
+        if conf_to_set is None and is_correct is False:
+            conf_to_set = -1
+        if conf_to_set is not None:
+            cur.execute(
+                "UPDATE quiz_questions SET user_answer = %s, is_correct = %s, confidence = %s WHERE id = %s",
+                (user_answer or None, is_correct, conf_to_set, qid),
+            )
+        else:
+            cur.execute(
+                "UPDATE quiz_questions SET user_answer = %s, is_correct = %s WHERE id = %s",
+                (user_answer or None, is_correct, qid),
+            )
 
-            # Update option_counts for the selected answer
+        # Update option_counts for the selected answer
+        try:
+            options_list = list(q_options or [])
+        except Exception:
+            options_list = []
+        try:
+            counts_list = list(q_option_counts or [])
+        except Exception:
+            counts_list = []
+        if options_list:
+            # Ensure counts_list length matches options_list
+            if len(counts_list) != len(options_list):
+                counts_list = [0] * len(options_list)
+            sel_idx = None
             try:
-                options_list = list(q_options or [])
+                sel_idx = options_list.index(user_answer)
             except Exception:
-                options_list = []
-            try:
-                counts_list = list(q_option_counts or [])
-            except Exception:
-                counts_list = []
-            if options_list:
-                # Ensure counts_list length matches options_list
-                if len(counts_list) != len(options_list):
-                    counts_list = [0] * len(options_list)
                 sel_idx = None
+            if sel_idx is not None and 0 <= sel_idx < len(counts_list):
                 try:
-                    sel_idx = options_list.index(user_answer)
+                    counts_list[sel_idx] = int(counts_list[sel_idx] or 0) + 1
                 except Exception:
-                    sel_idx = None
-                if sel_idx is not None and 0 <= sel_idx < len(counts_list):
-                    try:
-                        counts_list[sel_idx] = int(counts_list[sel_idx] or 0) + 1
-                    except Exception:
-                        counts_list[sel_idx] = 1
-                    # Persist updated counts
-                    cur.execute(
-                        "UPDATE quiz_questions SET option_counts = %s WHERE id = %s",
-                        (counts_list, qid),
-                    )
-
-            # Update counters: times_seen always; times_correct/correct_streak on correctness
-            cur.execute(
-                "UPDATE quiz_questions SET times_seen = COALESCE(times_seen,0) + 1 WHERE id = %s",
-                (qid,),
-            )
-
-            if is_correct and prev_is_correct is not True:
-                cur.execute("UPDATE quizzes SET score = COALESCE(score, 0) + 1 WHERE id = %s", (quiz_id,))
-                score_incremented = True
-
-            # Spaced repetition scheduling updates
-            if is_correct:
-                # bump correct counters
+                    counts_list[sel_idx] = 1
+                # Persist updated counts
                 cur.execute(
-                    "UPDATE quiz_questions SET times_correct = COALESCE(times_correct,0) + 1, correct_streak = COALESCE(correct_streak,0) + 1 WHERE id = %s",
-                    (qid,),
-                )
-                new_streak = int((prev_streak or 0)) + 1
-                # Only update interval when we have confidence (either now or later in confidence-only path)
-                if confidence is not None:
-                    try:
-                        cur_int = int(prev_interval) if prev_interval is not None else 1
-                    except Exception:
-                        cur_int = 1
-                    # interval *= max(1.0, 2*c/5) * max(1, correct_streak)
-                    base_mult = max(1.0, (2.0 * float(confidence) / 5.0))
-                    mult = base_mult * max(1, new_streak)
-                    calc = max(1.0, float(cur_int) * mult)
-                    new_int = max(1, int(round(calc)))
-                    mins = int(new_int) * 10
-                    cur.execute(
-                        "UPDATE quiz_questions SET interval = %s, last_reviewed = NOW(), next_review = NOW() + (%s || ' minutes')::interval WHERE id = %s",
-                        (new_int, mins, qid),
-                    )
-                # If confidence not provided yet, defer interval update until confidence-only request
-            else:
-                # Incorrect answer: interval = 1, schedule immediately
-                cur.execute(
-                    "UPDATE quiz_questions SET interval = 1, last_reviewed = NOW(), next_review = NOW() WHERE id = %s",
-                    (qid,),
-                )
-                # reset streak on incorrect
-                cur.execute(
-                    "UPDATE quiz_questions SET correct_streak = 0 WHERE id = %s",
-                    (qid,),
-                )
-                # Decrease topic difficulty by 0.2 if topic available
-                topic_key = (topic or "").strip()
-                if topic_key:
-                    try:
-                        cur.execute("SELECT topic_difficulty FROM quizzes WHERE id = %s", (quiz_id,))
-                        td_row = cur.fetchone()
-                        cur_map = {}
-                        if td_row and td_row[0]:
-                            try:
-                                cur_map = dict(td_row[0]) if isinstance(td_row[0], dict) else json.loads(td_row[0])
-                            except Exception:
-                                cur_map = {}
-                        cur_val = float(cur_map.get(topic_key, 0.0) or 0.0)
-                        new_val = cur_val - 0.2
-                        cur.execute(
-                            "UPDATE quizzes SET topic_difficulty = COALESCE(topic_difficulty, '{}'::jsonb) || jsonb_build_object(%s, %s) WHERE id = %s",
-                            (topic_key, new_val, quiz_id),
-                        )
-                    except Exception:
-                        pass
-
-        # Separate path: allow updating confidence only (after answering)
-        elif confidence is not None:
-            cur.execute(
-                "UPDATE quiz_questions SET confidence = %s WHERE id = %s",
-                (confidence, qid),
-            )
-            # If the question was (previously) correct, apply the interval update now using confidence
-            if prev_is_correct is True:
-                try:
-                    cur_int = int(prev_interval) if prev_interval is not None else 1
-                except Exception:
-                    cur_int = 1
-                # Use current streak from DB (prev_streak already reflects current stored value here)
-                base_mult = max(1.0, (2.0 * float(confidence) / 5.0))
-                mult = base_mult * max(1, int(prev_streak or 0))
-                calc = max(1.0, float(cur_int) * mult)
-                new_int = max(1, int(round(calc)))
-                mins = int(new_int) * 10
-                cur.execute(
-                    "UPDATE quiz_questions SET interval = %s, last_reviewed = NOW(), next_review = NOW() + (%s || ' minutes')::interval WHERE id = %s",
-                    (new_int, mins, qid),
+                    "UPDATE quiz_questions SET option_counts = %s WHERE id = %s",
+                    (counts_list, qid),
                 )
 
-        # If we have confidence and the question is (now or previously) correct, update per-topic difficulty on the quiz
-        # difficulty = 0.1 - (5 - confidence) * (0.08 + (5 - confidence) * 0.02)
-        if confidence is not None and (is_correct is True or prev_is_correct is True):
+        # Update counters: times_seen always; times_correct/correct_streak on correctness
+        cur.execute(
+            "UPDATE quiz_questions SET times_seen = COALESCE(times_seen,0) + 1 WHERE id = %s",
+            (qid,),
+        )
+
+        if is_correct and prev_is_correct is not True:
+            cur.execute("UPDATE quizzes SET score = COALESCE(score, 0) + 1 WHERE id = %s", (quiz_id,))
+            score_incremented = True
+
+        # Spaced repetition bookkeeping for streaks only; mastery/interval are handled
+        # on the confidence endpoint.
+        if is_correct:
+            new_streak = int((prev_streak or 0)) + 1
             try:
-                conf_val = int(confidence)
-                d = 0.1 - (5 - conf_val) * (0.08 + (5 - conf_val) * 0.02)
-                topic_key = (topic or "").strip()
-                if topic_key:
+                prev_max = int(prev_max_streak or 0)
+            except Exception:
+                prev_max = 0
+            new_max_streak = max(new_streak, prev_max)
+
+            # For correct answers, increment streaks and schedule the next review
+            # as NOW() plus 10 minutes times the current streak.
+            cur.execute(
+                """
+                UPDATE quiz_questions
+                SET
+                  times_correct = COALESCE(times_correct,0) + 1,
+                  correct_streak = %s,
+                  max_streak = %s,
+                  interval = %s,
+                  last_reviewed = NOW(),
+                  next_review = NOW() + (%s || ' minutes')::interval
+                WHERE id = %s
+                """,
+                (new_streak, new_max_streak, 10 * new_streak, 10 * new_streak, qid),
+            )
+        else:
+            # Incorrect answer: reset streak. If this question has never had a
+            # schedule (next_review is NULL), make it immediately due by setting
+            # next_review = NOW(). Otherwise, keep the existing next_review so
+            # already-scheduled questions retain their timing.
+            new_streak = 0
+            try:
+                prev_max = int(prev_max_streak or 0)
+            except Exception:
+                prev_max = 0
+            new_max_streak = prev_max
+
+            if prev_next_review is None:
+                cur.execute(
+                    "UPDATE quiz_questions SET correct_streak = %s, max_streak = %s, interval = 1, last_reviewed = NOW(), next_review = NOW() WHERE id = %s",
+                    (new_streak, new_max_streak, qid),
+                )
+            else:
+                cur.execute(
+                    "UPDATE quiz_questions SET correct_streak = %s, max_streak = %s, interval = 1, last_reviewed = NOW() WHERE id = %s",
+                    (new_streak, new_max_streak, qid),
+                )
+
+            # Decrease topic difficulty by 0.2 if topic available
+            topic_key = (topic or "").strip()
+            if topic_key:
+                try:
+                    cur.execute("SELECT topic_difficulty FROM quizzes WHERE id = %s", (quiz_id,))
+                    td_row = cur.fetchone()
+                    cur_map = {}
+                    if td_row and td_row[0]:
+                        try:
+                            cur_map = dict(td_row[0]) if isinstance(td_row[0], dict) else json.loads(td_row[0])
+                        except Exception:
+                            cur_map = {}
+                    cur_val = float(cur_map.get(topic_key, 0.0) or 0.0)
+                    new_val = cur_val - 0.2
                     cur.execute(
                         "UPDATE quizzes SET topic_difficulty = COALESCE(topic_difficulty, '{}'::jsonb) || jsonb_build_object(%s, %s) WHERE id = %s",
-                        (topic_key, d, quiz_id),
+                        (topic_key, new_val, quiz_id),
                     )
-                    # Update topics aggregate average if a matching topic title exists
-                    cur.execute(
-                        """
-                        UPDATE topics
-                        SET
-                          difficulty_sum = COALESCE(difficulty_sum, 0) + %s,
-                          difficulty_count = COALESCE(difficulty_count, 0) + 1,
-                          average_difficulty = (COALESCE(difficulty_sum, 0) + %s) / (COALESCE(difficulty_count, 0) + 1)
-                        WHERE lower(title) = lower(%s)
-                        """,
-                        (d, d, topic_key),
-                    )
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
         conn.commit()
         cur.close()
@@ -2487,9 +3020,231 @@ def record_quiz_answer():
         conn.close()
 
 
+@app.post("/api/quiz/confidence")
+def set_quiz_confidence():
+    """Update confidence for a quiz question and recompute mastery/interval."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    quiz_id = data.get("quiz_id")
+    question_id = data.get("question_id")
+    question_number = data.get("question_number")
+    raw_conf = data.get("confidence")
+
+    if not isinstance(quiz_id, int):
+        return jsonify(error="quiz_id required"), 400
+    if not question_id and not isinstance(question_number, int):
+        return jsonify(error="question_id or question_number required"), 400
+
+    # Parse confidence if provided, clamp to 0-5. We may still default below.
+    confidence = None
+    try:
+        if raw_conf is not None:
+            ci = int(raw_conf)
+            if ci < 0:
+                ci = 0
+            if ci > 5:
+                ci = 5
+            confidence = ci
+    except Exception:
+        confidence = None
+
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM quizzes WHERE id = %s AND created_by = %s", (quiz_id, user_id))
+        row = cur.fetchone()
+        if not row:
+            return jsonify(error="not found"), 404
+
+        if not question_id:
+            cur.execute(
+                "SELECT id, is_correct, interval, topic, COALESCE(correct_streak, 0), COALESCE(max_streak, 0), confidence, COALESCE(times_seen, 0), mastery FROM quiz_questions WHERE quiz_id = %s AND question_number = %s",
+                (quiz_id, question_number),
+            )
+        else:
+            cur.execute(
+                "SELECT id, is_correct, interval, topic, COALESCE(correct_streak, 0), COALESCE(max_streak, 0), confidence, COALESCE(times_seen, 0), mastery FROM quiz_questions WHERE id = %s AND quiz_id = %s",
+                (question_id, quiz_id),
+            )
+        qrow = cur.fetchone()
+        if not qrow:
+            return jsonify(error="question not found"), 404
+
+        qid, is_correct, prev_interval, topic, prev_streak, prev_max_streak, stored_conf, times_seen, prev_mastery = qrow
+
+        # Require that the question has been answered.
+        if is_correct is None:
+            return jsonify(error="question has no recorded answer"), 400
+
+        # Determine effective confidence: request -> stored -> default 3.
+        effective_conf = None
+        if confidence is not None:
+            effective_conf = confidence
+        elif stored_conf is not None:
+            try:
+                effective_conf = int(stored_conf)
+            except Exception:
+                effective_conf = None
+        if effective_conf is None:
+            effective_conf = 3
+
+        # Compute running average confidence based on times_seen and stored average.
+        # confidence column stores the average (0-5); avg_conf_val is the normalized
+        # value used in the mastery formula.
+        try:
+            ts = int(times_seen or 0)
+        except Exception:
+            ts = 0
+        # Start from stored_conf when available, otherwise from the current effective_conf.
+        try:
+            base_avg = float(stored_conf) if stored_conf is not None else float(effective_conf)
+        except Exception:
+            base_avg = float(effective_conf)
+        if ts > 1:
+            # average_conf = max(0, ((ts - 1) * average_conf + confidence) / ts)
+            try:
+                float_avg_conf = ((ts - 1) * base_avg + float(effective_conf)) / float(ts)
+            except Exception:
+                float_avg_conf = float(effective_conf)
+            try:
+                float_avg_conf = max(0.0, float_avg_conf)
+            except Exception:
+                float_avg_conf = float(effective_conf)
+        else:
+            try:
+                float_avg_conf = max(0.0, float(effective_conf))
+            except Exception:
+                float_avg_conf = float(effective_conf)
+
+        # Clamp average to [0,5] and persist as integer.
+        try:
+            float_avg_conf = max(0.0, min(5.0, float_avg_conf))
+        except Exception:
+            float_avg_conf = float(effective_conf)
+        avg_conf_int = int(round(float_avg_conf))
+
+        cur.execute(
+            "UPDATE quiz_questions SET confidence = %s WHERE id = %s",
+            (avg_conf_int, qid),
+        )
+
+        # Recompute mastery using streak, average confidence (0-5), and topic difficulty.
+        topic_key = (topic or "").strip()
+        avg_conf_val = 0.0
+        try:
+            avg_conf_val = max(0.0, min(1, (float_avg_conf / 5.0)))
+        except Exception:
+            avg_conf_val = 0.0
+
+        topic_diff_val = 0.0
+        if topic_key:
+            try:
+                cur.execute("SELECT topic_difficulty FROM quizzes WHERE id = %s", (quiz_id,))
+                td_row = cur.fetchone()
+                cur_map = {}
+                if td_row and td_row[0]:
+                    try:
+                        cur_map = dict(td_row[0]) if isinstance(td_row[0], dict) else json.loads(td_row[0])
+                    except Exception:
+                        cur_map = {}
+                topic_diff_val = float(cur_map.get(topic_key, 0.0) or 0.0)
+                if topic_diff_val == 0.0:
+                    cur.execute("SELECT average_difficulty FROM topics WHERE lower(title) = lower(%s)", (topic_key,))
+                    trow = cur.fetchone()
+                    if trow and trow[0] is not None:
+                        topic_diff_val = float(trow[0])
+            except Exception:
+                topic_diff_val = 0.0
+
+        # If topic difficulty is still unset/zero, start it at 1. Clamp the
+        # effective difficulty to a maximum of 5 so it stays in [1,5] when used
+        # in the mastery formula.
+        if topic_diff_val == 0.0:
+            topic_diff_val = 1.0
+        try:
+            topic_diff_val = min(5.0, float(topic_diff_val))
+        except Exception:
+            topic_diff_val = 1.0
+
+        new_streak = int(prev_streak or 0)
+        try:
+            new_max_streak = int(prev_max_streak or 0)
+        except Exception:
+            new_max_streak = new_streak
+
+        # Start from the existing mastery for this question (or 1.0 if not set)
+        try:
+            mastery_val = float(prev_mastery) if prev_mastery is not None else 1.0
+        except Exception:
+            mastery_val = 1.0
+        if new_max_streak > 0:
+            base_mastery = (
+                0.5 * (float(new_streak) / float(new_max_streak))
+                + 0.3 * avg_conf_val
+                + 0.2 * topic_diff_val
+            )
+            mastery_val = min(5.0, float(mastery_val + base_mastery))
+
+        cur.execute(
+            "UPDATE quiz_questions SET mastery = %s WHERE id = %s",
+            (mastery_val, qid),
+        )
+
+        # When the question is correct, update per-topic difficulty & aggregates using the
+        # existing difficulty formula. Interval scheduling is handled elsewhere.
+        if is_correct:
+            try:
+                # Incrementally increase topic difficulty toward 5 based on
+                # confidence. topic_diff_val is already clamped to [1,5]. We
+                # treat avg_conf_val in [0,1] as a scale on a small step.
+                base_diff = float(topic_diff_val)
+                step = 0.3 * float(avg_conf_val)  # max +0.3 per confident correct
+                new_diff = base_diff + step
+                if new_diff > 5.0:
+                    new_diff = 5.0
+
+                if topic_key:
+                    cur.execute(
+                        "UPDATE quizzes SET topic_difficulty = COALESCE(topic_difficulty, '{}'::jsonb) || jsonb_build_object(%s, %s) WHERE id = %s",
+                        (topic_key, new_diff, quiz_id),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE topics
+                        SET
+                          difficulty_sum = COALESCE(difficulty_sum, 0) + %s,
+                          difficulty_count = COALESCE(difficulty_count, 0) + 1,
+                          average_difficulty = (COALESCE(difficulty_sum, 0) + %s) / (COALESCE(difficulty_count, 0) + 1)
+                        WHERE lower(title) = lower(%s)
+                        """,
+                        (new_diff, new_diff, topic_key),
+                    )
+            except Exception:
+                pass
+
+        conn.commit()
+        cur.close()
+        return jsonify(success=True, confidence=effective_conf, mastery=mastery_val), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
 @app.post("/api/quizzes/<int:qzid>/reset")
 def reset_quiz(qzid: int):
-    """Reset quiz score to 0 and clear all user_answer/is_correct for its questions."""
+    """Reset quiz score to 0 without changing its questions.
+
+    This is used when the user presses "Retry Quiz". We only reset the
+    aggregate score so that the follow-up GET /api/quizzes/<id> can decide
+    whether to reuse existing due questions (next_review <= NOW()) and, if
+    there are fewer than original_count due, top up with new questions.
+    """
     user_id = session.get("user_id")
     if not user_id:
         return jsonify(error="unauthorized"), 401
@@ -2502,7 +3257,6 @@ def reset_quiz(qzid: int):
         if cur.fetchone() is None:
             return jsonify(error="not found"), 404
         cur.execute("UPDATE quizzes SET score = 0 WHERE id = %s", (qzid,))
-        cur.execute("UPDATE quiz_questions SET user_answer = NULL, is_correct = NULL WHERE quiz_id = %s", (qzid,))
         conn.commit()
         cur.close()
         return ("", 204)
@@ -2560,6 +3314,167 @@ def create_study_guide():
         conn.commit()
         cur.close()
         return jsonify(id=gid, title=title, created_at=(created_at.isoformat() if created_at else None)), 201
+    except Exception as e:
+        conn.rollback()
+        return jsonify(error=str(e)), 500
+    finally:
+        conn.close()
+
+
+@app.post("/api/plan_from_topics")
+def create_plan_from_topics():
+    """Generate a focused study guide and quiz from a list of topics.
+
+    Expects JSON body:
+      {
+        "course_id": optional int,
+        "course_name": optional string,
+        "topics": [
+          {"title": string, ...} | string,
+          ...
+        ]
+      }
+
+    Returns 201 with:
+      {
+        "study_guide": {"id", "title"},
+        "quiz": {"id", "title"}
+      }
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify(error="unauthorized"), 401
+
+    data = request.get_json(silent=True) or {}
+    course_id = data.get("course_id")
+    course_name = (data.get("course_name") or "This course").strip() or "This course"
+    raw_topics = data.get("topics")
+
+    topic_names: list[str] = []
+    if isinstance(raw_topics, list):
+        for it in raw_topics:
+            name = None
+            if isinstance(it, dict):
+                name = (it.get("title") or it.get("name") or "").strip()
+            else:
+                name = str(it or "").strip()
+            if name:
+                topic_names.append(name)
+    # De-duplicate while preserving order
+    seen = set()
+    deduped: list[str] = []
+    for t in topic_names:
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(t)
+    topic_names = deduped
+
+    if not topic_names:
+        return jsonify(error="topics list is required"), 400
+
+    # Build a compact synthetic text describing just these topics for guide/quiz generation.
+    bullets = "\n".join(f"- {t}" for t in topic_names)
+    base_text = (
+        f"You are creating study materials for the course '{course_name}'.\n"
+        "Focus ONLY on the following topics and subtopics, and ignore everything else.\n\n"
+        f"Topics to cover (each with clear explanations, key formulas/facts, and brief examples):\n{bullets}\n"
+    )
+
+    # 1) Generate study guide content from topics
+    try:
+        guide_content = generate_study_guide(base_text)
+    except Exception as e:
+        return jsonify(error=f"study guide generation failed: {e}"), 500
+    guide_content = (guide_content or "").strip()
+    if not guide_content:
+        return jsonify(error="study guide generation returned empty content"), 500
+
+    # Ensure we have enough text for quiz generation; if not, fall back to base_text.
+    quiz_source = guide_content
+    if estimate_tokens(quiz_source) < 60:
+        quiz_source = base_text
+
+    # Decide a small but non-trivial quiz size.
+    count = 10
+
+    try:
+        questions = generate_quiz_with_gemini(quiz_source, count, topic_names)
+    except Exception as e:
+        return jsonify(error=f"quiz generation failed: {e}"), 500
+    if not questions:
+        return jsonify(error="quiz generation returned no valid questions"), 500
+
+    conn = get_connection()
+    if not conn:
+        return jsonify(error="Database connection error"), 500
+
+    try:
+        cur = conn.cursor()
+
+        # Create study guide row
+        sg_title = f"{course_name} Study Guide"
+        cur.execute(
+            """
+            INSERT INTO study_guides (user_id, title, content)
+            VALUES (%s, %s, %s)
+            RETURNING id
+            """,
+            (user_id, sg_title, guide_content),
+        )
+        sg_id = cur.fetchone()[0]
+
+        # Create quiz row
+        q_title = f"{course_name} Quiz"
+        try:
+            course_id_int = int(course_id) if course_id is not None else None
+        except Exception:
+            course_id_int = None
+
+        cur.execute(
+            """
+            INSERT INTO quizzes (topics, created_by, score, original_count, source_summary, course_id, title)
+            VALUES (%s, %s, 0, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (topic_names, user_id, count, quiz_source, course_id_int, q_title),
+        )
+        quiz_id = cur.fetchone()[0]
+
+        # Insert quiz questions, assigning topics when present
+        for i, q in enumerate(questions[:count], start=1):
+            question = q.get("question")
+            options = q.get("options") or []
+            ci = q.get("correctIndex")
+            try:
+                correct_answer = options[ci] if isinstance(ci, int) and 0 <= ci < len(options) else None
+            except Exception:
+                correct_answer = None
+            if not question or correct_answer is None:
+                continue
+            raw_topic = q.get("topic")
+            try:
+                assigned_topic = (str(raw_topic).strip() or None) if raw_topic is not None else None
+            except Exception:
+                assigned_topic = None
+            cur.execute(
+                """
+                INSERT INTO quiz_questions (quiz_id, question_number, question, options, correct_answer, user_answer, is_correct, topic)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (quiz_id, i, question, options, correct_answer, None, None, assigned_topic),
+            )
+
+        conn.commit()
+        cur.close()
+        return (
+            jsonify(
+                study_guide={"id": sg_id, "title": sg_title},
+                quiz={"id": quiz_id, "title": q_title},
+            ),
+            201,
+        )
     except Exception as e:
         conn.rollback()
         return jsonify(error=str(e)), 500

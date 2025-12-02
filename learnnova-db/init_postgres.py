@@ -186,6 +186,8 @@ def create_tables():
                 times_correct INTEGER DEFAULT 0,
                 times_seen INTEGER DEFAULT 0,
                 correct_streak INTEGER DEFAULT 0,
+                max_streak INTEGER DEFAULT 0,
+                mastery DOUBLE PRECISION DEFAULT 0,
                 option_counts INTEGER[] DEFAULT '{}',
                 interval INTEGER,
                 last_reviewed TIMESTAMP,
