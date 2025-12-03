@@ -4,6 +4,23 @@ import katex from "katex";
  * Safely render inline math using KaTeX.
  * Falls back to returning the original text escaped if KaTeX throws.
  */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function applyInlineFormatting(html: string): string {
+  // Bold: **text**
+  let out = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Headers: ### -> h2, ## -> h3, # -> h1
+  out = out.replace(/^###\s*(.+)$/gm, "<h2>$1</h2>");
+  out = out.replace(/^##\s*(.+)$/gm, "<h3>$1</h3>");
+  out = out.replace(/^#\s*(.+)$/gm, "<h1>$1</h1>");
+  return out;
+}
+
 export function renderInlineMathSafe(text: string): string {
   if (!text) return "";
 
@@ -24,10 +41,7 @@ export function renderInlineMathSafe(text: string): string {
       }
     }
 
-    return text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+    return applyInlineFormatting(escapeHtml(text));
   }
 
   // Very small parser for $...$ inline math segments.
@@ -37,29 +51,20 @@ export function renderInlineMathSafe(text: string): string {
   while (i < text.length) {
     const start = text.indexOf("$", i);
     if (start === -1) {
-      // No more math delimiters; append the rest as escaped text.
-      const tail = text.slice(i)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+      // No more math delimiters; append the rest as escaped + formatted text.
+      const tail = applyInlineFormatting(escapeHtml(text.slice(i)));
       result += tail;
       break;
     }
 
-    // Append plain text before the math segment.
-    const before = text.slice(i, start)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+    // Append plain text before the math segment, with formatting.
+    const before = applyInlineFormatting(escapeHtml(text.slice(i, start)));
     result += before;
 
     const end = text.indexOf("$", start + 1);
     if (end === -1) {
-      // Unmatched $, treat the rest as plain text.
-      const tail = text.slice(start)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+      // Unmatched $, treat the rest as plain text with formatting.
+      const tail = applyInlineFormatting(escapeHtml(text.slice(start)));
       result += tail;
       break;
     }
@@ -79,10 +84,7 @@ export function renderInlineMathSafe(text: string): string {
       result += rendered;
     } catch {
       // On error, fall back to the original delimited text, escaped.
-      const fallback = text.slice(start, end + 1)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+      const fallback = escapeHtml(text.slice(start, end + 1));
       result += fallback;
     }
 
