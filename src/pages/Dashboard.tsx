@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
+import { MathText } from "@/components/MathText";
 import { 
   Brain, 
   BookOpen, 
@@ -537,8 +537,8 @@ const Dashboard = () => {
               <p className="text-muted-foreground">Loading...</p>
             ) : (
               <>
-                <div className="bg-gray-50 p-4 rounded border text-sm max-h-[60vh] overflow-auto">
-                  <MarkdownMathRenderer text={openSummary?.content || ""} />
+                <div className="bg-gray-50 p-4 rounded border text-sm max-h-[60vh] overflow-auto whitespace-pre-wrap break-words">
+                  <MathText text={openSummary?.content || ""} />
                 </div>
                 {openSummary?.topics && openSummary.topics.length > 0 && (
                   <div className="mt-3">
@@ -666,8 +666,8 @@ const Dashboard = () => {
             {openNoteLoading ? (
               <p className="text-muted-foreground">Loading...</p>
             ) : (
-              <div className="bg-gray-50 p-4 rounded border text-sm max-h-[60vh] overflow-auto">
-                <MarkdownMathRenderer text={openNote?.content || ""} />
+              <div className="bg-gray-50 p-4 rounded border text-sm max-h-[60vh] overflow-auto whitespace-pre-wrap break-words">
+                <MathText text={openNote?.content || ""} />
               </div>
             )}
           </div>

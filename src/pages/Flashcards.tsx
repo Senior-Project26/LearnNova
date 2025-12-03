@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { useLocation } from "react-router-dom";
+import { MathText } from "@/components/MathText";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -622,12 +622,10 @@ const Flashcards = () => {
                 {cards.map((c, idx) => (
                   <li key={idx} className="p-3 rounded-md bg-[#852E4E]/40">
                     <div className="font-semibold text-[#FFBB94]">
-                      Q:
-                      <MarkdownMathRenderer text={c.question} />
+                      Q: <MathText text={c.question} />
                     </div>
                     <div className="text-pink-100 mt-1">
-                      A:
-                      <MarkdownMathRenderer text={c.answer} />
+                      A: <MathText text={c.answer} />
                     </div>
                     <div className="mt-3 flex flex-col gap-2">
                       <div className="flex items-center gap-2">

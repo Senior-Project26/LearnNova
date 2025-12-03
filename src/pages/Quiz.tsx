@@ -3,7 +3,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
+import { MathText } from "@/components/MathText";
+
 import { Brain, CheckCircle2, XCircle, Sparkles, RotateCcw, Link as LinkIcon } from "lucide-react";
 
 import { sendChat } from "@/lib/chatApi";
@@ -542,51 +543,7 @@ export default function Quiz() {
     if (feedback !== null) {
       await persistConfidenceForCurrent();
     }
-    const next = idx + 1;
-    if (next < questions.length) {
-      setIdx(next);
-      const q = questions[next];
-      if (q && q.userAnswer) {
-        const sel = q.options.indexOf(q.userAnswer);
-        if (sel >= 0) {
-          setSelected(sel);
-          setFeedback(q.isCorrect ? "correct" : "incorrect");
-          return;
-        }
-      }
-      setSelected(null);
-      setFeedback(null);
-      setConfidence(null);
-    }
-  };
 
-  const persistConfidenceForCurrent = async (override?: number) => {
-    if (!questions || quizId == null) return;
-    const qid = questionIds[idx];
-    if (!qid) return;
-    const conf = override ?? confidence ?? 3;
-    try {
-      await fetch("/api/quiz/confidence", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          quiz_id: quizId,
-          question_id: qid,
-          question_number: idx + 1,
-          confidence: conf,
-        }),
-      });
-    } catch (e) {
-      console.warn("Failed to persist confidence", e);
-    }
-  };
-
-  const nextQuestion = async () => {
-    if (!questions) return;
-    if (feedback !== null) {
-      await persistConfidenceForCurrent();
-    }
     const next = idx + 1;
     if (next < questions.length) {
       setIdx(next);
@@ -623,8 +580,7 @@ export default function Quiz() {
         if (res.status === 204) {
           // Reload quiz from server after reset
           const getRes = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
-          const data = (await getRes.json().catch(() => ({}))) as unknown as ResumeQuizResponse | { error?: string };
-
+          const data = await getRes.json().catch(() => ({} as { error?: string }));
           if (getRes.ok && data && typeof data === "object" && "questions" in data) {
             const serverQs = (data.questions || []) as Array<{
               id: number; question: string; options: string[]; correctIndex: number | null;
@@ -980,9 +936,10 @@ export default function Quiz() {
             <CardContent className="space-y-6">
               {current && (
                 <div className="space-y-6">
-                  <div className="prose prose-invert max-w-none">
-                    <MarkdownMathRenderer text={current.question} />
+                  <div className="prose prose-invert max-w-none whitespace-pre-wrap break-words">
+                    <MathText text={current.question} />
                   </div>
+
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-xs text-pink-100">
                     <button
                       type="button"
@@ -1046,8 +1003,8 @@ export default function Quiz() {
                           <div className="flex items-center gap-3">
                             {showCorrect && <CheckCircle2 className="h-5 w-5 text-green-400" />}
                             {showIncorrect && <XCircle className="h-5 w-5 text-red-400" />}
-                            <div className="flex-1 min-w-0 prose prose-invert max-w-none">
-                              <MarkdownMathRenderer text={opt} />
+                            <div className="flex-1 min-w-0 prose prose-invert max-w-none whitespace-pre-wrap break-words">
+                              <MathText text={opt} />
                             </div>
                           </div>
                         </button>
@@ -1106,7 +1063,9 @@ export default function Quiz() {
                               {current.options.map((opt, i) => (
                                 <li key={i} className={`flex items-start gap-2 text-sm ${i===current.correctIndex ? "text-green-200" : "text-pink-200"}`}>
                                   <span className="min-w-[2rem] inline-block text-right text-pink-300">{(current.option_counts?.[i] ?? 0)}×</span>
-                                  <div className="flex-1 prose prose-invert max-w-none"><MarkdownMathRenderer text={opt} /></div>
+                                  <div className="flex-1 prose prose-invert max-w-none whitespace-pre-wrap break-words">
+                                    <MathText text={opt} />
+                                  </div>
                                 </li>
                               ))}
                             </ul>
@@ -1144,9 +1103,9 @@ export default function Quiz() {
                             <p className="text-xs text-pink-100">Generating explanation…</p>
                           )}
                           {explanation && (
-                            <div className="prose prose-invert max-w-none text-sm">
-                              <MarkdownMathRenderer text={explanation} />
-                            </div>
+                            <p className="text-sm text-pink-100 whitespace-pre-wrap break-words">
+                              {explanation}
+                            </p>
                           )}
                           {explainError && (
                             <p className="text-xs text-red-200">{explainError}</p>

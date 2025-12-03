@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, Link, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
+import { MathText } from "@/components/MathText";
 import { FileText, Brain, BookOpen, Upload, Sparkles, AlertCircle } from "lucide-react";
 
 type UploadResult = {
@@ -308,8 +308,8 @@ export default function Summary() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="bg-[#852E4E]/20 p-6 rounded-lg border border-pink-700/30 prose prose-invert max-w-none">
-                  <MarkdownMathRenderer text={summary || ""} />
+                <div className="bg-[#852E4E]/20 p-6 rounded-lg border border-pink-700/30 prose prose-invert max-w-none whitespace-pre-wrap break-words text-pink-50 text-sm">
+                  <MathText text={summary || ""} />
                 </div>
                 <div className="mt-4">
                   <div className="text-sm text-pink-200 mb-2">Topics</div>
@@ -430,8 +430,8 @@ export default function Summary() {
                       View raw response
                     </summary>
                     <div className="mt-3 space-y-3">
-                      <div className="bg-[#852E4E]/20 p-4 rounded-lg border border-pink-700/30 prose prose-invert max-w-none">
-                        <MarkdownMathRenderer text={extractedText || "(no extracted text)"} />
+                      <div className="bg-[#852E4E]/20 p-4 rounded-lg border border-pink-700/30 prose prose-invert max-w-none whitespace-pre-wrap break-words text-pink-50 text-sm">
+                        <MathText text={extractedText || "(no extracted text)"} />
                       </div>
                       {extractedText && (
                         <button

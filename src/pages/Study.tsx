@@ -3,9 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { MathText } from "@/components/MathText";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
-import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import {
   MessageSquare,
   BookOpen,
@@ -578,8 +578,8 @@ function RecentModal({ open, onOpenChange, title, body, loading, canPrev, canNex
           <DialogDescription className="sr-only">Recent item content</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          <div className="max-h-[70vh] overflow-auto text-sm bg-white rounded p-3">
-            {loading ? 'Loading…' : <MarkdownMathRenderer text={body || 'No content'} />}
+          <div className="max-h-[70vh] overflow-auto text-sm bg white rounded p-3 whitespace-pre-wrap break-words">
+            {loading ? 'Loading…' : <MathText text={body || 'No content'} />}
           </div>
           <div className="flex items-center justify-between">
             <Button variant="outline" disabled={!canPrev} onClick={onPrev} className="border-[#FFBB94] text-[#FFBB94]">Previous</Button>

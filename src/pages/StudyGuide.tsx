@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
+import { MathText } from "@/components/MathText";
 import { BookOpen, Sparkles, AlertCircle, RotateCcw } from "lucide-react";
 
 type ComboOption = { id: number; title: string };
@@ -361,8 +361,8 @@ export default function StudyGuide() {
                 {saveError && <span className="text-red-300 text-sm">{saveError}</span>}
               </div>
 
-              <div className="bg-[#852E4E]/20 p-6 rounded-lg border border-pink-700/30">
-                <MarkdownMathRenderer text={guide} />
+              <div className="bg-[#852E4E]/20 p-6 rounded-lg border border-pink-700/30 whitespace-pre-wrap break-words">
+                <MathText text={guide || ""} />
               </div>
             </CardContent>
           </Card>

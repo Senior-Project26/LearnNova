@@ -26,175 +26,198 @@ import LearningResources from "./pages/LearningResources";
 import FloatingChatBubble from "@/components/chat/FloatingChatBubble";
 import Plan from "./pages/Plan";
 import PlanResult from "./pages/PlanResult";
+import { useEffect, useRef } from "react";
+import renderMathInElement from "katex/contrib/auto-render";
 
 const queryClient = new QueryClient();
 
-const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <AuthProvider>
-        <Router>
-          <CosmicBackdrop />
-          <FloatingChatBubble />
-          <Routes>
-            {/* Public routes without navbar */}
-            <Route path="/" element={<Index />} />
-            <Route path="/signin" element={<SignIn />} />
-            <Route path="/signup" element={<SignUp />} />
-            <Route
-              path="/upload"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <Upload />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/summary"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <Summary />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/quiz"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <Quiz />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/study-guide"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <StudyGuide />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
+const App = () => {
+  const appRef = useRef<HTMLDivElement | null>(null);
 
-            {/* Protected routes (with Navigation bar) */}
-            <Route
-              path="/flashcards"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <Flashcards />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/study-set/:sid"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <StudySet />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/study"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <Study />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/plan"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <Plan />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/plan/results"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <PlanResult />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/dashboard"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <Dashboard />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/profile"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <Profile />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <Settings />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
-            <Route
-              path="/resources"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <LearningResources />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
+  useEffect(() => {
+    if (!appRef.current) return;
+    try {
+      renderMathInElement(appRef.current, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "$", right: "$", display: false },
+        ],
+        throwOnError: false,
+      });
+    } catch {
+      // fail quietly; quiz rendering should still show plain text
+    }
+  });
 
-            {/* Chat route */}
-            <Route
-              path="/chat"
-              element={
-                <SessionProtectedRoute>
-                  <ProtectedLayout>
-                    <ChatPage />
-                  </ProtectedLayout>
-                </SessionProtectedRoute>
-              }
-            />
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <AuthProvider>
+          <Router>
+            <CosmicBackdrop />
+            <div ref={appRef}>
+              <FloatingChatBubble />
+              <Routes>
+                {/* Public routes without navbar */}
+                <Route path="/" element={<Index />} />
+                <Route path="/signin" element={<SignIn />} />
+                <Route path="/signup" element={<SignUp />} />
+                <Route
+                  path="/upload"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <Upload />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/summary"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <Summary />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/quiz"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <Quiz />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/study-guide"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <StudyGuide />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
 
-            {/* Catch-all route */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </Router>
-      </AuthProvider>
-    </TooltipProvider>
-  </QueryClientProvider>
-);
+                {/* Protected routes (with Navigation bar) */}
+                <Route
+                  path="/flashcards"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <Flashcards />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/study-set/:sid"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <StudySet />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/study"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <Study />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/plan"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <Plan />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/plan/results"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <PlanResult />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/dashboard"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <Dashboard />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/profile"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <Profile />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/settings"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <Settings />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/resources"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <LearningResources />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+
+                {/* Chat route */}
+                <Route
+                  path="/chat"
+                  element={
+                    <SessionProtectedRoute>
+                      <ProtectedLayout>
+                        <ChatPage />
+                      </ProtectedLayout>
+                    </SessionProtectedRoute>
+                  }
+                />
+
+                {/* Catch-all route */}
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </div>
+          </Router>
+        </AuthProvider>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+};
 
 export default App;

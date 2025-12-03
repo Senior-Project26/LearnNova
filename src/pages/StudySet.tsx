@@ -4,7 +4,6 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
-import MarkdownMathRenderer from "@/components/MarkdownMathRenderer";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   AlertDialog,
@@ -270,8 +269,8 @@ export default function StudySet() {
                     title="Flip card"
                   >
                     {current ? (
-                      <div style={dynamicFontSize(isFront ? current.question : current.answer, isFront)} className="w-full text-center">
-                        <MarkdownMathRenderer text={isFront ? current.question : current.answer} />
+                      <div style={dynamicFontSize(isFront ? current.question : current.answer, isFront)} className="w-full text-center whitespace-pre-wrap break-words">
+                        {isFront ? current.question : current.answer}
                       </div>
                     ) : (
                       <div className="text-pink-100">…</div>
