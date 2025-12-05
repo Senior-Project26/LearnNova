@@ -9,9 +9,9 @@ LearnNova was created as a student project for CSC 4899 at Florida Southern Coll
 - **Note Summarization**: Upload PDFs/images/text; we extract content (Vision OCR for images/PDF scans) and generate concise, sectioned summaries.
 - **Quiz Generation**: Create multiple-choice, true/false, and fill-in-the-blank quizzes from your summary. Supports multiple sizes.
 - **Study Guide Creation**: Expand your notes into structured bullet-point guides with definitions, axioms, formulas, and short examples.
-- **AI Study Assistant**: Planned assistant to answer questions and explain topics contextually from your notes.
-- **Study Resources Aggregator**: Planned feature to collect helpful resources by topic.
-- **Flashcards**: Planned spaced-repetition decks generated from your notes.
+- **AI Study Assistant**: Assistant to answer questions and explain topics contextually from your notes.
+- **Study Resources Aggregator**: Collects helpful resources by topic.
+- **Flashcards**: Study decks generated from your notes.
 - **Multi-Subject Support**: Combine topics/notes to produce comprehensive quizzes, guides, and flashcards.
 - **Weakness Tracking**: Track quiz performance by topic and generate targeted practice problems.
 - **Study Plan Generator**: From uploaded notes and expected exam topics, generate a study plan with scheduled quizzes and study guides.
@@ -62,7 +62,7 @@ LearnNova was created as a student project for CSC 4899 at Florida Southern Coll
 - Node.js 18+
 - Python 3.11+
 - Google API key for Gemini (`GOOGLE_API_KEY`)
-- Optional: Google Application Default Credentials (ADC) for Vision OCR
+- Google Application Default Credentials (ADC) for Vision OCR
   - Set `GOOGLE_APPLICATION_CREDENTIALS` to your service account JSON if using OCR
 
 ## Setup
