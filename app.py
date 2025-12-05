@@ -71,7 +71,13 @@ gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 # ============================================================================
 
 try:
-    cred = credentials.Certificate("firebase-service-account.json")
+    # Get the secret folder path (one level up from current project)
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    secret_path = os.getenv('FIREBASE_SERVICE_ACCOUNT_PATH', 
+                           os.path.join(os.path.dirname(current_dir), "stellar-secrets", "firebase-service-account.json"))
+    
+    cred = credentials.Certificate(secret_path)
     firebase_admin.initialize_app(cred)
     print("Firebase Admin connected")
 except Exception as e:
