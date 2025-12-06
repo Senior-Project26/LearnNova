@@ -2363,9 +2363,13 @@ def get_quiz(qzid: int):
         if orig_count > 0 and len(due_rows) > orig_count:
             due_rows = due_rows[:orig_count]
         source_summary = str(q[4] or "")
-        # Only enter spaced/practice mode when the quiz is fully completed.
-        # In-progress quizzes should continue with the original flow (ordered by question_number).
-        practice_mode = completed
+        # Only enter spaced/practice mode when the quiz is fully completed, or when
+        # the client explicitly requests practice mode via query parameter
+        # mode=practice (used by explicit "restart" flows).
+        # In-progress quizzes without this flag continue with the original flow.
+        force_practice = (request.args.get("mode") == "practice")
+        practice_mode = completed or force_practice
+
         if practice_mode and orig_count > 0 and len(due_rows) < orig_count and source_summary.strip():
             need = orig_count - len(due_rows)
             # Collect existing texts and topics
@@ -3237,7 +3241,6 @@ def set_quiz_confidence():
     finally:
         conn.close()
 
-
 @app.post("/api/quizzes/<int:qzid>/reset")
 def reset_quiz(qzid: int):
     """Reset quiz score to 0 without changing its questions.
@@ -3258,7 +3261,20 @@ def reset_quiz(qzid: int):
         cur.execute("SELECT 1 FROM quizzes WHERE id = %s AND created_by = %s", (qzid, user_id))
         if cur.fetchone() is None:
             return jsonify(error="not found"), 404
+        # Reset aggregate quiz score, and clear per-question user answers so that
+        # a restart does not count prior correctness, while preserving the
+        # spaced-repetition schedule (next_review, times_seen, etc.).
         cur.execute("UPDATE quizzes SET score = 0 WHERE id = %s", (qzid,))
+        cur.execute(
+            """
+            UPDATE quiz_questions
+            SET
+              user_answer = NULL,
+              is_correct  = NULL
+            WHERE quiz_id = %s
+            """,
+            (qzid,),
+        )
         conn.commit()
         cur.close()
         return ("", 204)
@@ -3830,7 +3846,8 @@ def dashboard_quizzes():
               SUM(CASE WHEN COALESCE(NULLIF(qq.user_answer, ''), NULL) IS NOT NULL THEN 1 ELSE 0 END) AS answered_count,
               q.title,
               q.course_id,
-              q.topics
+              q.topics,
+              COALESCE(q.original_count, 0) AS original_count
             FROM quizzes q
             LEFT JOIN quiz_questions qq ON qq.quiz_id = q.id
             -- TEMP: show all quizzes regardless of user
@@ -3851,13 +3868,22 @@ def dashboard_quizzes():
             title = r[5]
             course_id = r[6]
             topics = r[7] or []
-            completed = (question_count > 0 and answered_count >= question_count)
+            original_count = r[8] or 0
+
+            # Use original_count (if set) as the effective length for
+            # determining completion, so added practice questions do not
+            # prevent a quiz from being marked completed on the dashboard.
+            effective_total = original_count or question_count
+            completed = (effective_total > 0 and answered_count >= effective_total)
+
             items.append({
                 "id": qid,
                 "created_at": (created_at.isoformat() if created_at else None),
                 "score": score,
                 "question_count": question_count,
+                "original_count": original_count,
                 "answered_count": answered_count,
+
                 "title": title,
                 "completed": completed,
                 "course_id": course_id,

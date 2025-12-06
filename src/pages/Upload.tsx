@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Upload as UploadIcon, FileText, Sparkles, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { renderInlineMathSafe } from "@/lib/math";
 import {
   Dialog,
   DialogContent,
@@ -24,6 +25,7 @@ export default function Upload() {
   const [courseFormError, setCourseFormError] = useState<string | null>(null);
   const [uploadSummary, setUploadSummary] = useState<string | null>(null);
   const [uploadExtractedText, setUploadExtractedText] = useState<string | null>(null);
+  const [uploadTopics, setUploadTopics] = useState<string[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedSummaryId, setSavedSummaryId] = useState<number | null>(null);
@@ -40,6 +42,10 @@ export default function Upload() {
     e.stopPropagation();
     if (!isDragging) setIsDragging(true);
   };
+
+  const getRenderedHtml = (text: string | null) => ({
+    __html: renderInlineMathSafe(text ?? ""),
+  });
 
   const handleSaveNotesAndSummary = async () => {
     if (!uploadSummary && !uploadExtractedText) return;
@@ -73,7 +79,7 @@ export default function Upload() {
           body: JSON.stringify({
             title: `${baseTitle} (Summary)`,
             content: uploadSummary,
-            topics: [],
+            topics: uploadTopics ?? [],
             course_id: selectedCourseId === "" ? null : selectedCourseId,
           }),
         });
@@ -181,8 +187,12 @@ export default function Upload() {
       }
       const summaryText = typeof data?.summary === "string" ? data.summary : null;
       const extractedText = typeof data?.extracted_text === "string" ? data.extracted_text : null;
+      const topicsFromApi = Array.isArray(data?.topics)
+        ? data.topics.map((t: unknown) => String(t || "").trim()).filter((t: string) => t.length > 0)
+        : null;
       setUploadSummary(summaryText);
       setUploadExtractedText(extractedText);
+      setUploadTopics(topicsFromApi);
       setSavedSummaryId(null);
       setSavedNoteId(null);
     } catch (err: unknown) {
@@ -335,14 +345,20 @@ export default function Upload() {
                   {uploadSummary && (
                     <div className="p-4 rounded-lg bg-[#852E4E]/20 border border-pink-700/40">
                       <p className="text-sm font-semibold text-pink-100 mb-2">Summary Preview</p>
-                      <p className="text-sm text-pink-200 whitespace-pre-wrap max-h-40 overflow-y-auto">{uploadSummary}</p>
+                      <div
+                        className="text-sm text-pink-200 whitespace-pre-wrap max-h-40 overflow-y-auto"
+                        dangerouslySetInnerHTML={getRenderedHtml(uploadSummary)}
+                      />
                     </div>
                   )}
 
                   {uploadExtractedText && (
                     <div className="p-4 rounded-lg bg-[#852E4E]/20 border border-pink-700/40">
                       <p className="text-sm font-semibold text-pink-100 mb-2">Original Notes Preview</p>
-                      <p className="text-sm text-pink-200 whitespace-pre-wrap max-h-40 overflow-y-auto">{uploadExtractedText}</p>
+                      <div
+                        className="text-sm text-pink-200 whitespace-pre-wrap max-h-40 overflow-y-auto"
+                        dangerouslySetInnerHTML={getRenderedHtml(uploadExtractedText)}
+                      />
                     </div>
                   )}
 
@@ -377,6 +393,7 @@ export default function Upload() {
                             result: {
                               extracted_text: uploadExtractedText ?? undefined,
                               filename: file?.name,
+                              topics: uploadTopics ?? undefined,
                             },
                           },
                         });

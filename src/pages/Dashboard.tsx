@@ -18,7 +18,7 @@ import {
   Sparkles
 } from "lucide-react";
 
-type QuizItem = { id: number; created_at: string | null; score: number; question_count: number; answered_count?: number; completed?: boolean; title?: string; course_id?: number | null; topics?: string[] };
+type QuizItem = { id: number; created_at: string | null; score: number; question_count: number; original_count?: number | null; answered_count?: number; completed?: boolean; title?: string; course_id?: number | null; topics?: string[] };
 type NoteItem = { id: number; title: string; updated_at: string | null; course_id?: number | null; topics?: string[] };
 type SummaryItem = { id: number; title?: string; created_at?: string | null; course_id?: number | null; topics?: string[] };
 
@@ -59,6 +59,11 @@ const Dashboard = () => {
   const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
   const [selectedTopic, setSelectedTopic] = useState<string>("");
   const toTitleCase = (s: string) => s.split(/\s+/).map(w => w ? (w[0].toUpperCase() + w.slice(1)) : w).join(" ");
+
+  const currentQuizMeta = useMemo(
+    () => (quizzes || []).find((q) => q.id === openQuizId) ?? null,
+    [quizzes, openQuizId]
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -170,29 +175,15 @@ const Dashboard = () => {
   const filteredNotes = useMemo(() => (notes || []).filter(n => matchesFilters(n.course_id ?? null, n.topics || [])), [notes, selectedCourseId, selectedTopic]);
   const filteredQuizzes = useMemo(() => (quizzes || []).filter(q => matchesFilters(q.course_id ?? null, q.topics || [])), [quizzes, selectedCourseId, selectedTopic]);
 
-  // Small helper component to render accurate per-run results for a quiz list item
-  function QuizResultBadge({ quizId, fallbackCorrect, fallbackTotal }: { quizId: number; fallbackCorrect: number; fallbackTotal: number }) {
-    const [dc, setDc] = useState<number | null>(null);
-    const [dt, setDt] = useState<number | null>(null);
-    useEffect(() => {
-      let mounted = true;
-      (async () => {
-        try {
-          const res = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
-          const data = await res.json().catch(() => ({}));
-          if (!mounted) return;
-          const dcor = typeof data?.display_correct === 'number' ? data.display_correct : null;
-          const dtot = typeof data?.display_total === 'number' ? data.display_total : (typeof data?.original_count === 'number' ? data.original_count : null);
-          if (dcor !== null) setDc(dcor);
-          if (dtot !== null) setDt(dtot);
-        } catch {}
-      })();
-      return () => { mounted = false; };
-    }, [quizId]);
-    const correct = (dc ?? fallbackCorrect) || 0;
-    const total = (dt ?? fallbackTotal) || 0;
+  // Small helper component to render per-run results for a quiz list item, using
+  // the stored score and question_count from the dashboard query only. When the
+  // quiz is marked completed by the backend, always show a "good" (green)
+  // badge regardless of percentage.
+  function QuizResultBadge({ fallbackCorrect, fallbackTotal, completed }: { quizId: number; fallbackCorrect: number; fallbackTotal: number; completed?: boolean }) {
+    const correct = fallbackCorrect || 0;
+    const total = fallbackTotal || 0;
     const pct = total > 0 ? Math.round((correct / total) * 100) : 0;
-    const good = pct >= 70;
+    const good = completed === true ? true : pct >= 70;
     return (
       <Badge
         variant={good ? 'default' : 'secondary'}
@@ -325,7 +316,16 @@ const Dashboard = () => {
                           </div>
                         </button>
                         <div className="flex items-center justify-between gap-2 pl-6">
-                          <QuizResultBadge quizId={q.id} fallbackCorrect={typeof q.score === 'number' ? q.score : 0} fallbackTotal={typeof q.question_count === 'number' ? q.question_count : 0} />
+                          <QuizResultBadge
+                            quizId={q.id}
+                            fallbackCorrect={typeof q.score === 'number' ? q.score : 0}
+                            fallbackTotal={
+                              typeof q.original_count === 'number' && q.original_count > 0
+                                ? q.original_count
+                                : (typeof q.question_count === 'number' ? q.question_count : 0)
+                            }
+                            completed={q.completed}
+                          />
                           <div className="flex items-center gap-1">
                             {q.completed && (
                               <button
@@ -334,7 +334,7 @@ const Dashboard = () => {
                                   try {
                                     const res = await fetch(`/api/quizzes/${q.id}/reset`, { method: "POST", credentials: "include" });
                                     if (res.status === 204) {
-                                      navigate("/quiz", { state: { quizId: q.id } });
+                                      navigate("/quiz", { state: { quizId: q.id, restart: true } });
                                     }
                                   } catch {}
                                 }}
@@ -598,29 +598,18 @@ const Dashboard = () => {
                 {savingQuizTitle ? 'Saving…' : (quizTitleSaved ? 'Saved' : 'Save')}
               </button>
               <button
-                className="w-full px-4 py-2 bg-green-600 text-white rounded disabled:opacity-60"
+                className="w-full px-4 py-2 bg-red-600 text-white rounded disabled:opacity-60"
                 disabled={!openQuizId || openQuizLoading}
                 onClick={async () => {
                   if (!openQuizId) return;
                   try {
-                    const res = await fetch(`/api/quizzes/${openQuizId}`, { credentials: "include" });
-                    if (!res.ok) return;
-                    const data = await res.json();
-                    const total = (data?.questions?.length ?? 0);
-                    const nextIdx = data?.next_unanswered_index ?? 0;
-                    if (total > 0 && nextIdx < total) {
-                      navigate("/quiz", { state: { quizId: openQuizId } });
-                    } else {
-                      // If completed, allow retry via reset then continue
-                      const reset = await fetch(`/api/quizzes/${openQuizId}/reset`, { method: "POST", credentials: "include" });
-                      if (reset.status === 204) {
-                        navigate("/quiz", { state: { quizId: openQuizId } });
-                      }
-                    }
+                    const reset = await fetch(`/api/quizzes/${openQuizId}/reset`, { method: "POST", credentials: "include" });
+                    if (reset.status !== 204) return;
+                    navigate("/quiz", { state: { quizId: openQuizId, restart: true } });
                   } catch {}
                 }}
               >
-                Continue
+                Restart
               </button>
             </div>
           </div>

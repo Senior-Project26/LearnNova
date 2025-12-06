@@ -196,7 +196,7 @@ export default function Quiz() {
   const [size, setSize] = useState<QuizSize>("small");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const location = useLocation() as { state?: { summary?: string; quizId?: number; noteId?: number } };
+  const location = useLocation() as { state?: { summary?: string; quizId?: number; noteId?: number; restart?: boolean } };
   const navigate = useNavigate();
   // Multi-select data
   const [allNotes, setAllNotes] = useState<Array<{ id: number; title: string }>>([]);
@@ -270,12 +270,16 @@ export default function Quiz() {
       })();
 
       const qid = location.state?.quizId;
+      const fromRestart = location.state?.restart === true;
+
       if (typeof qid === "number") {
         // Load existing quiz for resume
         (async () => {
           setLoading(true);
           try {
-            const res = await fetch(`/api/quizzes/${qid}`, { credentials: "include" });
+            const url = fromRestart ? `/api/quizzes/${qid}?mode=practice` : `/api/quizzes/${qid}`;
+            const res = await fetch(url, { credentials: "include" });
+
             const data: ResumeQuizResponse = await res
               .json()
               .catch(() => ({} as ResumeQuizResponse));
@@ -309,7 +313,17 @@ export default function Quiz() {
             setQuestions(mapped.length ? mapped : null);
             setQuizId(qid);
             setQuestionIds(serverQs.map(q => q.id));
-            const nextIdx = Math.max(0, Math.min((data?.next_unanswered_index ?? 0), Math.max(0, mapped.length)));
+            // For explicit restarts, always start at the first question of the
+            // returned block. Otherwise, use backend-computed next_unanswered_index.
+            let nextIdx = 0;
+            if (!fromRestart) {
+              const rawNext = data?.next_unanswered_index;
+              if (typeof rawNext === "number" && mapped.length > 0) {
+                // Clamp into [0, mapped.length - 1] just in case.
+                nextIdx = Math.min(Math.max(rawNext, 0), mapped.length - 1);
+              }
+            }
+
             setIdx(nextIdx);
             // Prefer display_correct/display_total for practice/resume
             setScore(Number((data?.display_correct ?? data?.score ?? 0)));
@@ -579,7 +593,7 @@ export default function Quiz() {
         const res = await fetch(`/api/quizzes/${quizId}/reset`, { method: "POST", credentials: "include" });
         if (res.status === 204) {
           // Reload quiz from server after reset
-          const getRes = await fetch(`/api/quizzes/${quizId}`, { credentials: "include" });
+          const getRes = await fetch(`/api/quizzes/${quizId}?mode=practice`, { credentials: "include" });
           const data = await getRes.json().catch(() => ({} as { error?: string }));
           if (getRes.ok && data && typeof data === "object" && "questions" in data) {
             const serverQs = (data.questions || []) as Array<{
